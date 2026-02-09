@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "RAPID3"  # pip install する時の名前
-version = "3.0.0"
+name = "RAPID2_Agilent"  # pip install する時の名前
+version = "0.1.0"
 dependencies = [
     "PyQt6",
     "numpy",
