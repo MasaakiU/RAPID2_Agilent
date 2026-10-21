@@ -1,0 +1,10 @@
+{
+  "binning": {"mz_min": 50.0, "mz_max": 1700.0, "ppm": 10.0, "aggregation": "sum"},
+  "transform": {"method": "asinh", "scale": null},
+  "compute": {"metric": "cosine", "device": "cpu", "chunk_size": 64},
+  "dtw": {"diagonal_weight": 2.0, "horizontal_weight": 1.0, "vertical_weight": 1.0, "gap_penalty": 0.1, "rt_band_seconds": null},
+  "anchors": {"stride": 1, "max_anchors": null, "preserve_endpoints": true},
+  "selection": {"ms_level": 1, "polarity": null, "reader_rt_unit": "minutes", "rt_range_seconds": null, "stride": 1, "max_scans": null},
+  "solver": "obiwarp",
+  "extrapolation": "nan"
+}

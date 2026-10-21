@@ -8,7 +8,9 @@ version = "0.1.0"
 dependencies = [
     "PyQt6",
     "numpy",
+    "lxml",
+    "scipy",  # RT alignment of the m/z-RT map's B - A view
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/RAPID3"] # srcの中のどのフォルダをパッケージにするか指定
+packages = ["src/RAPID2_Agilent"] # srcの中のどのフォルダをパッケージにするか指定

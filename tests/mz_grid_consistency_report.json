@@ -1,0 +1,611 @@
+{
+  "method": "AgilentDModel.load + extract_spectrum, spectrum_param_index=0 (profile); all scans and all points, including zero-intensity bins; exact np.array_equal comparison to the first scan in each group. Delta/ppm statistics compare equal-length arrays by point index to that group's first scan; ppm denominator is its m/z.",
+  "files": [
+    {
+      "path": "/Users/masaaki/Documents/1_Research/4_Codes/1_miniconda/env_RAPID2_Agilent/tests/data/4_P2-10-12_BD_sv_MeOH100_ACN0_p0.d",
+      "overall": {
+        "scans": 507,
+        "exact_matches_to_reference_including_reference": 64,
+        "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.14869342234646865,
+        "max_abs_delta_ppm_vs_reference_for_equal_lengths": 87.50689137346731,
+        "first_mismatch": {
+          "scan_index_zero_based": 62,
+          "point_count": 875008,
+          "unequal_points": 875008,
+          "example_point_index_near_mz_500": 391830,
+          "reference_mz": 499.99983229298334,
+          "scan_mz": 499.9988931182204,
+          "delta_mz_at_example": -0.0009391747629479141
+        },
+        "reference_scan_index_zero_based": 0,
+        "reference_mz_endpoints": [
+          49.922103100559745,
+          1699.2211359062458
+        ],
+        "max_abs_delta_location": {
+          "scan_index_zero_based": 276,
+          "point_index_zero_based": 875007,
+          "reference_mz": 1699.2211359062458,
+          "scan_mz": 1699.3698293285922
+        },
+        "all_mz_arrays_exactly_equal": false,
+        "point_count_histogram": {
+          "875008": 507
+        },
+        "unique_mz_arrays_sha256": 444,
+        "unique_raw_time_grids": 1,
+        "raw_time_grids_start_delta_count": [
+          [
+            19360.0,
+            0.1,
+            875008
+          ]
+        ],
+        "unique_calibration_rows": 444,
+        "calibration_ids": [
+          1
+        ],
+        "varying_calibration_fields": [
+          "coeff",
+          "base"
+        ]
+      },
+      "by_scan_type": {
+        "Positive MS1": {
+          "scans": 507,
+          "exact_matches_to_reference_including_reference": 64,
+          "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.14869342234646865,
+          "max_abs_delta_ppm_vs_reference_for_equal_lengths": 87.50689137346731,
+          "first_mismatch": {
+            "scan_index_zero_based": 62,
+            "point_count": 875008,
+            "unequal_points": 875008,
+            "example_point_index_near_mz_500": 391830,
+            "reference_mz": 499.99983229298334,
+            "scan_mz": 499.9988931182204,
+            "delta_mz_at_example": -0.0009391747629479141
+          },
+          "reference_scan_index_zero_based": 0,
+          "reference_mz_endpoints": [
+            49.922103100559745,
+            1699.2211359062458
+          ],
+          "max_abs_delta_location": {
+            "scan_index_zero_based": 276,
+            "point_index_zero_based": 875007,
+            "reference_mz": 1699.2211359062458,
+            "scan_mz": 1699.3698293285922
+          },
+          "all_mz_arrays_exactly_equal": false,
+          "point_count_histogram": {
+            "875008": 507
+          },
+          "unique_mz_arrays_sha256": 444,
+          "unique_raw_time_grids": 1,
+          "raw_time_grids_start_delta_count": [
+            [
+              19360.0,
+              0.1,
+              875008
+            ]
+          ],
+          "unique_calibration_rows": 444,
+          "calibration_ids": [
+            1
+          ],
+          "varying_calibration_fields": [
+            "coeff",
+            "base"
+          ]
+        }
+      }
+    },
+    {
+      "path": "/Users/masaaki/Documents/1_Research/4_Codes/1_miniconda/env_RAPID2_Agilent/tests/data/9_P2-8-15_spl1_p0.d",
+      "overall": {
+        "scans": 598,
+        "exact_matches_to_reference_including_reference": 1,
+        "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.013367111960860711,
+        "max_abs_delta_ppm_vs_reference_for_equal_lengths": 10.733336143064866,
+        "first_mismatch": {
+          "scan_index_zero_based": 1,
+          "point_count": 875008,
+          "unequal_points": 875008,
+          "example_point_index_near_mz_500": 391756,
+          "reference_mz": 500.0005976216133,
+          "scan_mz": 500.0006237149838,
+          "delta_mz_at_example": 2.609337053627314e-05
+        },
+        "reference_scan_index_zero_based": 0,
+        "reference_mz_endpoints": [
+          49.96579647310204,
+          1699.443358835951
+        ],
+        "max_abs_delta_location": {
+          "scan_index_zero_based": 369,
+          "point_index_zero_based": 875007,
+          "reference_mz": 1699.443358835951,
+          "scan_mz": 1699.4567259479118
+        },
+        "all_mz_arrays_exactly_equal": false,
+        "point_count_histogram": {
+          "875008": 598
+        },
+        "unique_mz_arrays_sha256": 598,
+        "unique_raw_time_grids": 1,
+        "raw_time_grids_start_delta_count": [
+          [
+            19360.0,
+            0.1,
+            875008
+          ]
+        ],
+        "unique_calibration_rows": 598,
+        "calibration_ids": [
+          1
+        ],
+        "varying_calibration_fields": [
+          "coeff",
+          "base"
+        ]
+      },
+      "by_scan_type": {
+        "Positive MS1": {
+          "scans": 598,
+          "exact_matches_to_reference_including_reference": 1,
+          "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.013367111960860711,
+          "max_abs_delta_ppm_vs_reference_for_equal_lengths": 10.733336143064866,
+          "first_mismatch": {
+            "scan_index_zero_based": 1,
+            "point_count": 875008,
+            "unequal_points": 875008,
+            "example_point_index_near_mz_500": 391756,
+            "reference_mz": 500.0005976216133,
+            "scan_mz": 500.0006237149838,
+            "delta_mz_at_example": 2.609337053627314e-05
+          },
+          "reference_scan_index_zero_based": 0,
+          "reference_mz_endpoints": [
+            49.96579647310204,
+            1699.443358835951
+          ],
+          "max_abs_delta_location": {
+            "scan_index_zero_based": 369,
+            "point_index_zero_based": 875007,
+            "reference_mz": 1699.443358835951,
+            "scan_mz": 1699.4567259479118
+          },
+          "all_mz_arrays_exactly_equal": false,
+          "point_count_histogram": {
+            "875008": 598
+          },
+          "unique_mz_arrays_sha256": 598,
+          "unique_raw_time_grids": 1,
+          "raw_time_grids_start_delta_count": [
+            [
+              19360.0,
+              0.1,
+              875008
+            ]
+          ],
+          "unique_calibration_rows": 598,
+          "calibration_ids": [
+            1
+          ],
+          "varying_calibration_fields": [
+            "coeff",
+            "base"
+          ]
+        }
+      }
+    },
+    {
+      "path": "/Users/masaaki/Documents/1_Research/4_Codes/1_miniconda/env_RAPID2_Agilent/tests/data/dummy_RP_2min_neg.d",
+      "overall": {
+        "scans": 118,
+        "exact_matches_to_reference_including_reference": 1,
+        "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+        "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+        "first_mismatch": {
+          "scan_index_zero_based": 1,
+          "point_count": 799968,
+          "unequal_points": 799968,
+          "example_point_index_near_mz_500": 316679,
+          "reference_mz": 500.0004145574979,
+          "scan_mz": 499.99998077688036,
+          "delta_mz_at_example": -0.00043378061752719077
+        },
+        "reference_scan_index_zero_based": 0,
+        "reference_mz_endpoints": [
+          99.99677628167615,
+          1699.484649134167
+        ],
+        "max_abs_delta_location": {
+          "scan_index_zero_based": 100,
+          "point_index_zero_based": 799967,
+          "reference_mz": 1699.484649134167,
+          "scan_mz": 1699.480465374112
+        },
+        "all_mz_arrays_exactly_equal": false,
+        "point_count_histogram": {
+          "799968": 118
+        },
+        "unique_mz_arrays_sha256": 118,
+        "unique_raw_time_grids": 1,
+        "raw_time_grids_start_delta_count": [
+          [
+            26880.0,
+            0.1,
+            799968
+          ]
+        ],
+        "unique_calibration_rows": 118,
+        "calibration_ids": [
+          2
+        ],
+        "varying_calibration_fields": [
+          "coeff",
+          "base"
+        ]
+      },
+      "by_scan_type": {
+        "Negative MS1": {
+          "scans": 118,
+          "exact_matches_to_reference_including_reference": 1,
+          "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+          "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+          "first_mismatch": {
+            "scan_index_zero_based": 1,
+            "point_count": 799968,
+            "unequal_points": 799968,
+            "example_point_index_near_mz_500": 316679,
+            "reference_mz": 500.0004145574979,
+            "scan_mz": 499.99998077688036,
+            "delta_mz_at_example": -0.00043378061752719077
+          },
+          "reference_scan_index_zero_based": 0,
+          "reference_mz_endpoints": [
+            99.99677628167615,
+            1699.484649134167
+          ],
+          "max_abs_delta_location": {
+            "scan_index_zero_based": 100,
+            "point_index_zero_based": 799967,
+            "reference_mz": 1699.484649134167,
+            "scan_mz": 1699.480465374112
+          },
+          "all_mz_arrays_exactly_equal": false,
+          "point_count_histogram": {
+            "799968": 118
+          },
+          "unique_mz_arrays_sha256": 118,
+          "unique_raw_time_grids": 1,
+          "raw_time_grids_start_delta_count": [
+            [
+              26880.0,
+              0.1,
+              799968
+            ]
+          ],
+          "unique_calibration_rows": 118,
+          "calibration_ids": [
+            2
+          ],
+          "varying_calibration_fields": [
+            "coeff",
+            "base"
+          ]
+        }
+      }
+    },
+    {
+      "path": "/Users/masaaki/Documents/1_Research/4_Codes/1_miniconda/env_RAPID2_Agilent/tests/data/dummy_RP_2min_neg_copy.d",
+      "overall": {
+        "scans": 118,
+        "exact_matches_to_reference_including_reference": 1,
+        "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+        "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+        "first_mismatch": {
+          "scan_index_zero_based": 1,
+          "point_count": 799968,
+          "unequal_points": 799968,
+          "example_point_index_near_mz_500": 316679,
+          "reference_mz": 500.0004145574979,
+          "scan_mz": 499.99998077688036,
+          "delta_mz_at_example": -0.00043378061752719077
+        },
+        "reference_scan_index_zero_based": 0,
+        "reference_mz_endpoints": [
+          99.99677628167615,
+          1699.484649134167
+        ],
+        "max_abs_delta_location": {
+          "scan_index_zero_based": 100,
+          "point_index_zero_based": 799967,
+          "reference_mz": 1699.484649134167,
+          "scan_mz": 1699.480465374112
+        },
+        "all_mz_arrays_exactly_equal": false,
+        "point_count_histogram": {
+          "799968": 118
+        },
+        "unique_mz_arrays_sha256": 118,
+        "unique_raw_time_grids": 1,
+        "raw_time_grids_start_delta_count": [
+          [
+            26880.0,
+            0.1,
+            799968
+          ]
+        ],
+        "unique_calibration_rows": 118,
+        "calibration_ids": [
+          2
+        ],
+        "varying_calibration_fields": [
+          "coeff",
+          "base"
+        ]
+      },
+      "by_scan_type": {
+        "Negative MS1": {
+          "scans": 118,
+          "exact_matches_to_reference_including_reference": 1,
+          "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+          "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+          "first_mismatch": {
+            "scan_index_zero_based": 1,
+            "point_count": 799968,
+            "unequal_points": 799968,
+            "example_point_index_near_mz_500": 316679,
+            "reference_mz": 500.0004145574979,
+            "scan_mz": 499.99998077688036,
+            "delta_mz_at_example": -0.00043378061752719077
+          },
+          "reference_scan_index_zero_based": 0,
+          "reference_mz_endpoints": [
+            99.99677628167615,
+            1699.484649134167
+          ],
+          "max_abs_delta_location": {
+            "scan_index_zero_based": 100,
+            "point_index_zero_based": 799967,
+            "reference_mz": 1699.484649134167,
+            "scan_mz": 1699.480465374112
+          },
+          "all_mz_arrays_exactly_equal": false,
+          "point_count_histogram": {
+            "799968": 118
+          },
+          "unique_mz_arrays_sha256": 118,
+          "unique_raw_time_grids": 1,
+          "raw_time_grids_start_delta_count": [
+            [
+              26880.0,
+              0.1,
+              799968
+            ]
+          ],
+          "unique_calibration_rows": 118,
+          "calibration_ids": [
+            2
+          ],
+          "varying_calibration_fields": [
+            "coeff",
+            "base"
+          ]
+        }
+      }
+    },
+    {
+      "path": "/Users/masaaki/Documents/1_Research/4_Codes/1_miniconda/env_RAPID2_Agilent/tests/data/dummy_RP_2min_neg_copy_2.d",
+      "overall": {
+        "scans": 118,
+        "exact_matches_to_reference_including_reference": 1,
+        "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+        "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+        "first_mismatch": {
+          "scan_index_zero_based": 1,
+          "point_count": 799968,
+          "unequal_points": 799968,
+          "example_point_index_near_mz_500": 316679,
+          "reference_mz": 500.0004145574979,
+          "scan_mz": 499.99998077688036,
+          "delta_mz_at_example": -0.00043378061752719077
+        },
+        "reference_scan_index_zero_based": 0,
+        "reference_mz_endpoints": [
+          99.99677628167615,
+          1699.484649134167
+        ],
+        "max_abs_delta_location": {
+          "scan_index_zero_based": 100,
+          "point_index_zero_based": 799967,
+          "reference_mz": 1699.484649134167,
+          "scan_mz": 1699.480465374112
+        },
+        "all_mz_arrays_exactly_equal": false,
+        "point_count_histogram": {
+          "799968": 118
+        },
+        "unique_mz_arrays_sha256": 118,
+        "unique_raw_time_grids": 1,
+        "raw_time_grids_start_delta_count": [
+          [
+            26880.0,
+            0.1,
+            799968
+          ]
+        ],
+        "unique_calibration_rows": 118,
+        "calibration_ids": [
+          2
+        ],
+        "varying_calibration_fields": [
+          "coeff",
+          "base"
+        ]
+      },
+      "by_scan_type": {
+        "Negative MS1": {
+          "scans": 118,
+          "exact_matches_to_reference_including_reference": 1,
+          "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+          "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+          "first_mismatch": {
+            "scan_index_zero_based": 1,
+            "point_count": 799968,
+            "unequal_points": 799968,
+            "example_point_index_near_mz_500": 316679,
+            "reference_mz": 500.0004145574979,
+            "scan_mz": 499.99998077688036,
+            "delta_mz_at_example": -0.00043378061752719077
+          },
+          "reference_scan_index_zero_based": 0,
+          "reference_mz_endpoints": [
+            99.99677628167615,
+            1699.484649134167
+          ],
+          "max_abs_delta_location": {
+            "scan_index_zero_based": 100,
+            "point_index_zero_based": 799967,
+            "reference_mz": 1699.484649134167,
+            "scan_mz": 1699.480465374112
+          },
+          "all_mz_arrays_exactly_equal": false,
+          "point_count_histogram": {
+            "799968": 118
+          },
+          "unique_mz_arrays_sha256": 118,
+          "unique_raw_time_grids": 1,
+          "raw_time_grids_start_delta_count": [
+            [
+              26880.0,
+              0.1,
+              799968
+            ]
+          ],
+          "unique_calibration_rows": 118,
+          "calibration_ids": [
+            2
+          ],
+          "varying_calibration_fields": [
+            "coeff",
+            "base"
+          ]
+        }
+      }
+    },
+    {
+      "path": "/Users/masaaki/Documents/1_Research/4_Codes/1_miniconda/env_RAPID2_Agilent/tests/data/dummy_RP_2min_neg_copy_3.d",
+      "overall": {
+        "scans": 118,
+        "exact_matches_to_reference_including_reference": 1,
+        "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+        "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+        "first_mismatch": {
+          "scan_index_zero_based": 1,
+          "point_count": 799968,
+          "unequal_points": 799968,
+          "example_point_index_near_mz_500": 316679,
+          "reference_mz": 500.0004145574979,
+          "scan_mz": 499.99998077688036,
+          "delta_mz_at_example": -0.00043378061752719077
+        },
+        "reference_scan_index_zero_based": 0,
+        "reference_mz_endpoints": [
+          99.99677628167615,
+          1699.484649134167
+        ],
+        "max_abs_delta_location": {
+          "scan_index_zero_based": 100,
+          "point_index_zero_based": 799967,
+          "reference_mz": 1699.484649134167,
+          "scan_mz": 1699.480465374112
+        },
+        "all_mz_arrays_exactly_equal": false,
+        "point_count_histogram": {
+          "799968": 118
+        },
+        "unique_mz_arrays_sha256": 118,
+        "unique_raw_time_grids": 1,
+        "raw_time_grids_start_delta_count": [
+          [
+            26880.0,
+            0.1,
+            799968
+          ]
+        ],
+        "unique_calibration_rows": 118,
+        "calibration_ids": [
+          2
+        ],
+        "varying_calibration_fields": [
+          "coeff",
+          "base"
+        ]
+      },
+      "by_scan_type": {
+        "Negative MS1": {
+          "scans": 118,
+          "exact_matches_to_reference_including_reference": 1,
+          "max_abs_delta_mz_vs_reference_for_equal_lengths": 0.00418376005495702,
+          "max_abs_delta_ppm_vs_reference_for_equal_lengths": 2.9800410312017482,
+          "first_mismatch": {
+            "scan_index_zero_based": 1,
+            "point_count": 799968,
+            "unequal_points": 799968,
+            "example_point_index_near_mz_500": 316679,
+            "reference_mz": 500.0004145574979,
+            "scan_mz": 499.99998077688036,
+            "delta_mz_at_example": -0.00043378061752719077
+          },
+          "reference_scan_index_zero_based": 0,
+          "reference_mz_endpoints": [
+            99.99677628167615,
+            1699.484649134167
+          ],
+          "max_abs_delta_location": {
+            "scan_index_zero_based": 100,
+            "point_index_zero_based": 799967,
+            "reference_mz": 1699.484649134167,
+            "scan_mz": 1699.480465374112
+          },
+          "all_mz_arrays_exactly_equal": false,
+          "point_count_histogram": {
+            "799968": 118
+          },
+          "unique_mz_arrays_sha256": 118,
+          "unique_raw_time_grids": 1,
+          "raw_time_grids_start_delta_count": [
+            [
+              26880.0,
+              0.1,
+              799968
+            ]
+          ],
+          "unique_calibration_rows": 118,
+          "calibration_ids": [
+            2
+          ],
+          "varying_calibration_fields": [
+            "coeff",
+            "base"
+          ]
+        }
+      }
+    }
+  ],
+  "include_msms": false,
+  "excluded_files": [
+    {
+      "path": "/Users/masaaki/Documents/1_Research/4_Codes/1_miniconda/env_RAPID2_Agilent/tests/data/MSMS_data/9_PRJ_0-1-2_PA34-1_1uM_n1.d",
+      "excluded": true,
+      "reason": "Dataset contains MS/MS scans (MSLevel > 1); the entire .d dataset is excluded.",
+      "ms_levels": [
+        1,
+        2
+      ]
+    }
+  ]
+}
