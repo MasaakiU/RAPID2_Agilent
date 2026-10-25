@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from simulator import SHAPES, Config, _labels, _measure, _shape, _shape_params, simulate  # noqa: E402
+from simulator import SHAPES, Config, _labels, _measure, _saturation, _shape, _shape_params, simulate  # noqa: E402
 
 
 @pytest.mark.parametrize("shape", SHAPES)
@@ -118,3 +118,14 @@ def test_a_narrow_peak_on_a_wide_one_is_a_peak_of_its_own():
     assert (wide.label, narrow.label, narrow.components) == ("ignore", "positive", 1)
     # on its side: both peaks
     assert [peak.label for peak in _narrow_on_wide(60.0)] == ["positive", "positive"]
+
+
+def test_a_strong_top_within_half_a_point_of_the_end_is_saturated_there():
+    x = np.arange(500, dtype=float)
+    component = {"center": 499.7, "fwhm": 10.0, "shape": "gauss", "params": {}, "height": 1000.0}
+    component |= _measure(component)
+    baseline = np.zeros(500)
+    clean = baseline + component["height"] * _shape(component, x)
+    saturation = _saturation(np.random.default_rng(0), replace(Config(), saturation=1.0), x, [component], baseline,
+                             clean)
+    assert saturation["end"] == 499 and saturation["clean"].max() < clean.max()

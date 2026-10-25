@@ -271,7 +271,7 @@ def _saturation(rng, config, x, components, baseline, clean) -> dict | None:
     if not strong or rng.random() >= config.saturation:
         return None
     component = max(strong, key=lambda c: c["height"])
-    top = int(round(component["apex"]))
+    top = min(int(round(component["apex"])), len(x) - 1)  # of a top within half a point of the end, the last point
     ceiling = baseline[top] + component["height"] * rng.uniform(0.4, 0.9)
     cut = clean > ceiling
     region = np.flatnonzero(cut)
