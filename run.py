@@ -1,6 +1,7 @@
 # project_root/run.py
+# python run.py [folder.d ...]
 
-from src.RAPID2_Agilent.main import main
+from RAPID2_Agilent.main import main
 
 if __name__ == "__main__":
     main()

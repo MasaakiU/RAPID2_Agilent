@@ -1,22 +1,22 @@
 import os
 import sys
-from pathlib import Path
 
 import numpy as np
 from PyQt6.QtWidgets import QApplication
 
 from RAPID2_Agilent.models.rpd_model import AgilentDModel
 from RAPID2_Agilent.views.data_view import ChromatogramSpectrumPresenter, ChromatogramSpectrumView
+from tests.data_paths import DATA_DIR, require
 
 
-DATA_PATH = Path("tests/data/dummy_RP_2min_neg.d")
+DATA_PATH = DATA_DIR / "dummy_RP_2min_neg.d"
 
 
 def build_presenter():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(sys.argv)
     model = AgilentDModel()
-    model.load(DATA_PATH)
+    model.load(require(DATA_PATH))
     view = ChromatogramSpectrumView()
     presenter = ChromatogramSpectrumPresenter(view, model)
     presenter.initialize(scan_index=5, mz_window=(150.0, 151.0))
@@ -96,3 +96,29 @@ def test_auto_y_range_off_keeps_dragged_y_range_after_view_range_change():
     chromatogram_window.plotItem.setRange(xRange=(x_min, x_max), yRange=dragged_y_range, padding=0)
 
     np.testing.assert_allclose(chromatogram_window.plotItem.viewRange_y(), dragged_y_range)
+
+
+def test_rt_window_outside_scans_gives_no_spectrum():
+    app, model, view, presenter = build_presenter()
+    rt_first, rt_last = float(model.RT_list[0]), float(model.RT_list[-1])
+
+    warning = view.spectrum_window.warning_label.textItem.toPlainText
+    for rt_window in [(rt_first - 2.0, rt_first - 1.0), (rt_last + 1.0, rt_last + 2.0)]:
+        mz_list, inten_list, _ = presenter.extract_spectrum_for_rt_window(rt_window)
+        assert len(mz_list) == 0 and len(inten_list) == 0
+        presenter.set_rt_window(rt_window)
+        assert warning() == "RT window beyond the scanned RT range"
+
+    presenter.set_rt_window((rt_first, rt_last))
+    assert warning() == ""
+
+
+def test_rt_window_between_scans_gives_nearest_scan_spectrum():
+    app, model, view, presenter = build_presenter()
+    rt_center = (float(model.RT_list[5]) + float(model.RT_list[6])) / 2
+    half_width = (float(model.RT_list[6]) - float(model.RT_list[5])) / 10
+
+    mz_list, _, scan_index = presenter.extract_spectrum_for_rt_window((rt_center - half_width, rt_center + half_width))
+
+    assert len(mz_list) > 0
+    assert scan_index in (5, 6)

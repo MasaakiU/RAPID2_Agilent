@@ -21,7 +21,9 @@ from PyQt6.QtWidgets import (
 )
 
 from RAPID2_Agilent.views.data_view import MyViewBox
+from RAPID2_Agilent.views.view_constants import BROWSING_MARKER_COLOR
 
+from RAPID2_Agilent.views.layout_metrics import SMALL
 from .diagnostics import Diagnostics, DiagnosticsPlot
 
 
@@ -38,7 +40,6 @@ class MzRtMapWindow(QWidget):
     clicked = pyqtSignal(float, float)  # RT, m/z
     marker_range_changed = pyqtSignal(float, float, float, float)  # RT min/max, m/z min/max
     view_range_settle_ms = 100
-    marker_color = "#00e5ff"
     marker_hover_color = "#ffffff"
     scale_slider_steps = 1000  # over log10(s)
     color_maps = {  # shown name: pyqtgraph name
@@ -145,9 +146,9 @@ class MzRtMapWindow(QWidget):
             pos=(0, 0),
             size=(1, 1),
             rotatable=False,
-            pen=pg.mkPen(self.marker_color, width=2),
+            pen=pg.mkPen(BROWSING_MARKER_COLOR, width=2),
             hoverPen=pg.mkPen(self.marker_hover_color, width=2),
-            handlePen=pg.mkPen(self.marker_color),
+            handlePen=pg.mkPen(BROWSING_MARKER_COLOR),
             handleHoverPen=pg.mkPen(self.marker_hover_color),
         )
         for x, y in ((0, 0), (0.5, 0), (1, 0), (1, 0.5), (1, 1), (0.5, 1), (0, 1), (0, 0.5)):
@@ -227,7 +228,7 @@ class MzRtMapWindow(QWidget):
         form_layout.addRow(self.show_marker_check_box)
         self.diff_group = QGroupBox("B − A")
         diff_layout = QFormLayout(self.diff_group)
-        diff_layout.setContentsMargins(6, 6, 6, 6)
+        diff_layout.setContentsMargins(SMALL, SMALL, SMALL, SMALL)
         diff_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         diff_layout.addRow("Range", self.fold_change_spin_box)
         diff_layout.addRow(self.normalize_check_box)
@@ -238,7 +239,7 @@ class MzRtMapWindow(QWidget):
         self.control_panel = QWidget()
         self.control_panel.setObjectName("MzRtMapControlPanel")
         control_layout = QVBoxLayout(self.control_panel)
-        control_layout.setContentsMargins(6, 6, 6, 6)
+        control_layout.setContentsMargins(SMALL, SMALL, SMALL, SMALL)
         control_layout.addLayout(form_layout)
         control_layout.addWidget(self.diff_group)
         control_layout.addStretch(1)
@@ -483,6 +484,12 @@ class MzRtMapWindow(QWidget):
 
     def clear_image(self):
         self.image_item.clear()
+
+    def set_marker_color(self, color: tuple[int, int, int, int]):
+        self.marker.setPen(pg.mkPen(color, width=2))
+        for handle in self.marker.getHandles():
+            handle.pen = handle.currentPen = pg.mkPen(color)
+            handle.update()
 
     def set_marker(self, rt_range: tuple[float, float] | None, mz_range: tuple[float, float] | None = None):
         self._marker_ranges = None if rt_range is None or mz_range is None else (rt_range, mz_range)

@@ -1,51 +1,32 @@
 import math
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFontDatabase, QTextOption
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QSizePolicy, QTextEdit, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, Qt, pyqtSignal
+from PyQt6.QtGui import QFontDatabase, QPainter, QPalette, QTextOption
+from PyQt6.QtWidgets import QFrame, QSizePolicy, QTextEdit, QToolTip, QVBoxLayout, QWidget
 
-from RAPID2_Agilent.views.widgets import make_icon_button
+from RAPID2_Agilent.views.layout_metrics import SMALL, MEDIUM
 
 
 class FileInfoPanel(QWidget):
+    clicked = pyqtSignal(object)  # keyboard modifiers
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("FileInfoPanel")
+        self._selected = False
+        self._hovered = False
         self._file_path_text = ""
 
         self.file_name_edit = self._make_text_edit("FileNameTextEdit")
         self.scan_type_edit = self._make_text_edit("ScanTypeTextEdit")
-        self.button_layout = self._make_button_layout()
-        self.move_to_top_button = make_icon_button("angles-up-solid", "Move to top")
-        self.move_up_button = make_icon_button("angle-up-solid", "Move up")
-        self.move_down_button = make_icon_button("angle-down-solid", "Move down")
-        self.move_to_bottom_button = make_icon_button("angles-down-solid", "Move to bottom")
-        self.close_button = make_icon_button("xmark-solid", "Close")
-        self.button_layout.addStretch(1)
-        self.add_button(self.move_to_top_button)
-        self.add_button(self.move_up_button)
-        self.add_button(self.move_down_button)
-        self.add_button(self.move_to_bottom_button)
-        self.add_button(self.close_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(10)
-        layout.addLayout(self.button_layout, 0)
+        layout.setContentsMargins(SMALL, SMALL, SMALL, SMALL)
+        layout.setSpacing(MEDIUM)
         layout.addWidget(self.file_name_edit)
         layout.addWidget(self.scan_type_edit)
         layout.addStretch(1)
-
-    @staticmethod
-    def _make_button_layout() -> QHBoxLayout:
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        return layout
-
-    def add_button(self, button: QWidget) -> None:
-        self.button_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignTop)
 
     @staticmethod
     def _make_text_edit(object_name: str) -> QTextEdit:
@@ -58,11 +39,66 @@ class FileInfoPanel(QWidget):
         text_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        text_edit.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text_edit.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        text_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         text_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        text_edit.setStyleSheet("QTextEdit { background: transparent; }")
+        # transparent without a style sheet: one would keep the text colour from following Light/Dark changes
+        text_edit.viewport().setAutoFillBackground(False)
         text_edit.document().setDocumentMargin(0)
         return text_edit
+
+    def is_selected(self) -> bool:
+        return self._selected
+
+    def set_selected(self, selected: bool) -> None:
+        if selected == self._selected:
+            return
+        self._selected = selected
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(event.modifiers())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def event(self, event):
+        # the text edits take no mouse events, so their tooltips are shown from here
+        if event.type() == QEvent.Type.ToolTip:
+            for text_edit in (self.file_name_edit, self.scan_type_edit):
+                if text_edit.toolTip() and text_edit.geometry().contains(event.pos()):
+                    QToolTip.showText(event.globalPos(), text_edit.toolTip(), self)
+                    return True
+            QToolTip.hideText()
+            event.ignore()
+            return True
+        return super().event(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        if self._selected:
+            color = self.palette().color(QPalette.ColorRole.Highlight)
+            color.setAlpha(80)
+            painter.fillRect(self.rect(), color)
+        if self._hovered:
+            # the text colour, faint: a darker grey in Light mode, a lighter one in Dark
+            color = self.palette().color(QPalette.ColorRole.WindowText)
+            color.setAlpha(25)
+            painter.fillRect(self.rect(), color)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

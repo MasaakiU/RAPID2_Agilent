@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication
 from RAPID2_Agilent.models.main_model import MainModel
 from RAPID2_Agilent.presenters.main_presenter import MainPresenter
 from RAPID2_Agilent.views.main_window import MainWindow
+from RAPID2_Agilent.views.view_constants import ZOOM_MZ_PADDING
 from tests.test_chromatogram_spectrum_stack import load_model
 
 
@@ -126,9 +127,27 @@ def test_reset_x_range_button_includes_all_files_and_keeps_manual_y(viewer, coun
         np.testing.assert_allclose(window.plotItem.viewRange_y(), (index + 10.0, index + 20.0))
 
 
+def test_zoom_to_window_button_shows_window_with_room(viewer):
+    presenter, name, controls = viewer
+    windows = add_windows(presenter, name)
+    stack = presenter.data_stack_presenter
+    if name == "chromatogram_window":
+        stack.set_rt_window((1.0, 1.4))
+        expected = (0.6, 1.8)  # as wide again on each side
+    else:
+        stack.set_mz_window((1.0, 1.4))
+        expected = (1.0 - ZOOM_MZ_PADDING, 1.4 + ZOOM_MZ_PADDING)
+
+    controls.zoom_to_window_button.click()
+
+    for window in windows:
+        np.testing.assert_allclose(window.plotItem.viewRange_x(), expected)
+
+
 def test_controls_before_loading_and_new_files_inherit_settings(viewer):
     presenter, name, controls = viewer
     controls.reset_x_range_button.click()
+    controls.zoom_to_window_button.click()
     controls.link_y_button.click()
     controls.auto_y_button.click()
     first, = add_windows(presenter, name, count=1)
@@ -159,3 +178,104 @@ def test_linked_auto_y_handles_empty_and_flat_visible_data(viewer):
     second.plotItem.setXRange(10.0, 11.0)
     for window in (first, second):
         np.testing.assert_allclose(window.plotItem.viewRange_y(), (-0.6, 0.6))
+
+
+def test_file_control_buttons_sit_above_info_panels():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    view = MainWindow()
+    buttons = view.file_control_buttons
+    for button in (
+        buttons.move_to_top_button,
+        buttons.move_up_button,
+        buttons.move_down_button,
+        buttons.move_to_bottom_button,
+        buttons.close_button,
+    ):
+        assert not button.icon().isNull()
+    assert buttons.width() == view.data_stack_view.info_w
+    view.close()
+    view.deleteLater()
+    app.processEvents()
+
+
+def test_file_control_buttons_reorder_and_close_selected_files():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    view = MainWindow()
+    presenter = MainPresenter(view, MainModel())
+    children = [presenter.add_ms_data_model(load_model()) for _ in range(3)]
+    stack_view = view.data_stack_view
+    buttons = view.file_control_buttons
+    map_presenter = presenter.mz_rt_map_presenter
+    map_presenter.current_model = children[0].model
+
+    assert not buttons.isEnabled()
+    stack_view.set_selected_items([children[2].view])
+    assert buttons.isEnabled()
+
+    def data_set_models():
+        return [data_set.original for data_set in presenter.model.rpd_data_set_list._data_sets]
+
+    buttons.move_to_top_button.click()
+    assert presenter.data_stack_presenter.child_presenters == [children[2], children[0], children[1]]
+    assert data_set_models() == presenter.data_stack_presenter.models
+
+    stack_view.set_selected_items([children[0].view])
+    buttons.close_button.click()
+    assert presenter.data_stack_presenter.child_presenters == [children[2], children[1]]
+    assert data_set_models() == [children[2].model, children[1].model]
+    # the one below is selected, for the next close
+    assert stack_view.selected_items == [children[1].view]
+    assert buttons.isEnabled()
+    # A was closed while the map's window is hidden: none until it is shown
+    assert map_presenter.current_model is None
+    assert view.mz_rt_map_window.file_combo.count() == 2
+
+    presenter.data_stack_presenter.clear()
+    view.close()
+    view.deleteLater()
+    app.processEvents()
+
+
+def test_button_groups_line_up_with_their_columns_beside_the_scroll_bar():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    view = MainWindow()
+    presenter = MainPresenter(view, MainModel())
+    # at the size it opens at, its smallest
+    view.show()
+    stack_view = view.data_stack_view
+
+    def edges(widget):
+        return widget.mapTo(view, widget.rect().topLeft()).x(), widget.mapTo(view, widget.rect().topRight()).x()
+
+    def check_lined_up():
+        for _ in range(3):
+            app.processEvents()
+        item = stack_view.stack_items[0]
+        # nothing of the rows under the scroll bar
+        assert edges(item.file_info_panel)[1] <= edges(stack_view.viewport())[1]
+        assert edges(view.rt_view_control_buttons)[0] == edges(item.chromatogram_window)[0]
+        assert edges(view.mz_view_control_buttons)[0] == edges(item.spectrum_window)[0]
+        # the file buttons in the room above the info panels, from its left
+        assert edges(view.file_control_buttons) == edges(item.file_info_panel)
+        assert edges(view.file_control_buttons.move_to_top_button)[0] == edges(item.file_info_panel)[0]
+
+    presenter.add_ms_data_model(load_model())
+    assert stack_view.scroll_bar_extent() == 0
+    check_lined_up()
+    while stack_view.scroll_bar_extent() == 0:
+        presenter.add_ms_data_model(load_model())
+        app.processEvents()
+    check_lined_up()
+    while stack_view.scroll_bar_extent() != 0:
+        stack_view.select_item(stack_view.stack_items[-1])
+        presenter.data_stack_presenter.close_selected()
+        app.processEvents()
+    check_lined_up()
+
+    presenter.data_stack_presenter.clear()
+    view.close()
+    view.deleteLater()
+    app.processEvents()

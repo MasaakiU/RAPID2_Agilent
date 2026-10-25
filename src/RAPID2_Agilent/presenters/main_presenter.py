@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 import subprocess
 import sys
 from typing import TYPE_CHECKING
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QFileDialog, 
+    QApplication,
+    QCheckBox,
+    QFileDialog,
+    QMessageBox,
+    QProgressDialog,
 )
 
 from RAPID2_Agilent.models.rpd_model import AgilentDModel, BaseMSDataModel, RPDFileModel
+from RAPID2_Agilent.models.run_peaks import RunPeaksStore
+from RAPID2_Agilent.services import peak_detection, rpd_csv
 from RAPID2_Agilent.views.data_stack import ChromatogramSpectrumStackPresenter
 from RAPID2_Agilent.views.mz_rt_map import MzRtMapPresenter
 from RAPID2_Agilent.views.target_panel import TargetPanelPresenter
@@ -28,15 +35,26 @@ class MainPresenter:
             self.view.target_panel,
             self.model.target_list_model,
             self.data_stack_presenter,
+            self.model.settings_model,
         )
+        link_rt_windows_check_box = self.view.link_rt_windows_check_box
+        link_rt_windows_check_box.setChecked(self.data_stack_presenter.link_rt_windows)
+        link_rt_windows_check_box.toggled.connect(self.target_panel_presenter.set_link_rt_windows)
+        # the files' RT windows are one but for a target's
+        link_rt_windows_check_box.setEnabled(self.target_panel_presenter.editing_target)
+        self.target_panel_presenter.editing_target_changed.connect(link_rt_windows_check_box.setEnabled)
         self.mz_rt_map_presenter = MzRtMapPresenter(
             self.view.mz_rt_map_window,
             self.data_stack_presenter,
             self.target_panel_presenter,
         )
+        self._mcp_controller = None
         self._connect_view_signals()
         self.model.target_list_model.undo_state_changed.connect(self.view.set_target_undo_state)
         self.data_stack_presenter.view_range_undo_state_changed.connect(self.view.set_view_range_undo_state)
+        self.data_stack_presenter.models_changed.connect(
+            lambda: self.model.keep_ms_data_models(self.data_stack_presenter.models)
+        )
 
     def _connect_view_signals(self) -> None:
         self.view.open_rpd_files_requested.connect(self.open_rpd_files_clicked)
@@ -44,6 +62,9 @@ class MainPresenter:
         self.view.convert_files_requested.connect(self.convert_files_clicked)
         self.view.export_targets_requested.connect(self.export_targets_clicked)
         self.view.load_targets_requested.connect(self.load_targets_clicked)
+        self.view.target_panel.export_requested.connect(self.export_targets_clicked)
+        self.view.target_panel.import_requested.connect(self.load_targets_clicked)
+        self.view.target_panel.auto_requested.connect(self.detect_peaks_clicked)
         self.view.export_images_requested.connect(self.export_images_clicked)
         self.view.export_all_images_requested.connect(self.export_allimages_clicked)
         self.view.add_compound_requested.connect(self.add_compound_clicked)
@@ -60,6 +81,8 @@ class MainPresenter:
         self.view.show_adduct_ion_syntax_requested.connect(self.show_adduct_ion_syntax)
         self.view.about_requested.connect(self.show_about)
         self.view.preferences_requested.connect(self.show_preferences)
+        self.view.ai_assistant_access_toggled.connect(self.set_ai_assistant_access)
+        self.view.copy_ai_assistant_command_requested.connect(self.copy_ai_assistant_command)
         for window_name, controls in (
             ("chromatogram_window", self.view.rt_view_control_buttons),
             ("spectrum_window", self.view.mz_view_control_buttons),
@@ -76,6 +99,24 @@ class MainPresenter:
             controls.reset_x_range_button.clicked.connect(
                 lambda _checked=False, name=window_name: stack.reset_x_range(name)
             )
+            controls.zoom_to_window_button.clicked.connect(
+                lambda _checked=False, name=window_name: stack.zoom_to_window(name)
+            )
+        file_controls = self.view.file_control_buttons
+        for button, action in (
+            (file_controls.move_to_top_button, self.data_stack_presenter.move_selected_to_top),
+            (file_controls.move_up_button, self.data_stack_presenter.move_selected_up),
+            (file_controls.move_down_button, self.data_stack_presenter.move_selected_down),
+            (file_controls.move_to_bottom_button, self.data_stack_presenter.move_selected_to_bottom),
+            (file_controls.close_button, self.data_stack_presenter.close_selected),
+        ):
+            button.clicked.connect(lambda _checked=False, action=action: action())
+        # usable while a file is selected
+        data_stack_view = self.view.data_stack_view
+        data_stack_view.selection_changed.connect(
+            lambda: file_controls.setEnabled(bool(data_stack_view.selected_items))
+        )
+        file_controls.setEnabled(bool(data_stack_view.selected_items))
 
     def add_ms_data_model(self, ms_data_model: BaseMSDataModel):
         self.model.add_ms_data_model(ms_data_model)
@@ -105,7 +146,17 @@ class MainPresenter:
             return
 
         self.model.settings_model.save_last_dir(folder_path_list[-1])
+        # each folder is opened once: the files are told apart by their folders
+        open_folders = {Path(model.file_path).resolve() for model in self.data_stack_presenter.models}
+        to_open, already_open = [], []
         for folder_path in folder_path_list:
+            folder = Path(folder_path).resolve()
+            (already_open if folder in open_folders else to_open).append(folder_path)
+            open_folders.add(folder)
+        if already_open:
+            names = "\n".join(Path(folder_path).name for folder_path in already_open)
+            QMessageBox.information(self.view, "Open .d folder", f"Open already:\n\n{names}")
+        for folder_path in to_open:
             ms_data_model = AgilentDModel()
             ms_data_model.load(Path(folder_path))
             self.add_ms_data_model(ms_data_model)
@@ -176,11 +227,220 @@ class MainPresenter:
     def convert_files_clicked(self):
         pass
 
-    def export_targets_clicked(self):
-        pass
+    # notes on rows listed after an export, the rest counted
+    EXPORT_NOTES_SHOWN = 20
 
-    def load_targets_clicked(self):
-        pass
+    def export_targets_clicked(self, file_path: str | None = None):
+        """Write the targets and their values in the open files as a .rpd.csv file, asked for unless given."""
+        targets = self.model.target_list_model.targets
+        if not targets:
+            QMessageBox.information(self.view, "Export Targets", "There are no targets to export.")
+            return
+        if file_path is None:
+            last_dir = Path(self.model.settings_model.get_last_dir())
+            file_path, _filter = QFileDialog.getSaveFileName(
+                self.view, "Export Targets", str(last_dir / (last_dir.name + rpd_csv.SUFFIX)),
+                f"RAPID2 targets (*{rpd_csv.SUFFIX})",
+            )
+            if not file_path:
+                return
+            # the dialog asked about overwriting the name it gave, not the one completed here
+            path = rpd_csv.rpd_csv_path(file_path)
+            if path != Path(file_path) and path.exists() and QMessageBox.question(
+                self.view, "Export Targets", f"{path.name} already exists. Replace it?"
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        path = rpd_csv.rpd_csv_path(file_path)
+        runs = [rpd_csv.Run(model, Path(model.file_path)) for model in self.data_stack_presenter.models]
+        progress, on_progress = self._progress("Export Targets", "Exporting targets")
+        try:
+            rows, notes = rpd_csv.export_rows(
+                targets, runs, merge_ppm=self.model.settings_model.ms2_merge_ppm, run_peaks=self.run_peaks_to_export(),
+                on_progress=on_progress,
+            )
+            rpd_csv.write_rpd_csv(path, rows)
+        except rpd_csv.Cancelled:
+            return
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self.view, "Export Targets", f"The targets could not be exported.\n\n{error}")
+            return
+        finally:
+            progress.close()
+            # with the peaks found for it, in the files they were not looked for in yet
+            self.target_panel_presenter.refresh_run_peaks()
+        self.model.settings_model.save_last_dir(path)
+        if notes:
+            listed = "\n".join(notes[:self.EXPORT_NOTES_SHOWN])
+            more = len(notes) - self.EXPORT_NOTES_SHOWN
+            QMessageBox.information(
+                self.view, "Export Targets",
+                f"Written to {path.name}. Of its rows, {len(notes)} have no values or leave scans out:\n\n{listed}"
+                + (f"\n... and {more} more" if more > 0 else ""),
+            )
+
+    def detect_peaks_clicked(self):
+        """Find the peaks of the selected targets, of all if none is, in the open files, and take each target's; the
+        files' RT windows are their own then, as what is found is."""
+        selected = set(self.view.target_panel.selected_target_ids())
+        targets = [target for target in self.model.target_list_model.targets if not selected or target.id in selected]
+        models = self.data_stack_presenter.models
+        if not targets or not models:
+            QMessageBox.information(self.view, "Auto", "There are no targets." if not targets else "No files are open.")
+            return
+        pairs = [(target, model) for target in targets for model in models]
+        run_peaks = self.model.run_peaks
+        hand_set = [
+            (target, model) for target, model in pairs
+            if (kept := run_peaks.get(target.id, model.file_path)) is not None and kept.manual
+        ]
+        keep_manual = False
+        if hand_set:
+            box = QMessageBox(
+                QMessageBox.Icon.Question, "Auto",
+                f"{len(hand_set)} of the RT windows were set by hand. Overwrite them with the peaks found as well, "
+                "or keep them?",
+                parent=self.view,
+            )
+            overwrite_button = box.addButton("Overwrite all", QMessageBox.ButtonRole.DestructiveRole)
+            keep_button = box.addButton("Keep hand-set", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() not in (overwrite_button, keep_button):
+                return
+            keep_manual = box.clickedButton() is keep_button
+        merge_ppm = self.model.settings_model.ms2_merge_ppm
+        progress, on_progress = self._progress("Auto", "Finding the peaks")
+        found = []
+        try:
+            for done, (target, model) in enumerate(pairs, start=1):
+                found.append((target, model, peak_detection.find_run_peaks(model, target, merge_ppm=merge_ppm)))
+                on_progress("Finding the peaks", done, len(pairs))
+        except rpd_csv.Cancelled:
+            return  # nothing changed
+        finally:
+            progress.close()
+        self.model.target_list_model.set_found_run_peaks(
+            [(target.id, model.file_path, run_peaks_found) for target, model, run_peaks_found in found],
+            keep_manual=keep_manual,
+        )
+        self.view.link_rt_windows_check_box.setChecked(False)
+        self.target_panel_presenter.refresh_run_peaks()
+
+    def _progress(self, title: str, label: str) -> tuple[QProgressDialog, Callable[[str, int, int], None]]:
+        """A dialog of the progress of a long task, and the on_progress(what, done, total) to tell it, which raises
+        rpd_csv.Cancelled once Cancel is clicked."""
+        progress = QProgressDialog(label, "Cancel", 0, 0, self.view)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+
+        def on_progress(what: str, done: int, total: int):
+            progress.setLabelText(what)
+            progress.setMaximum(max(total, 1))
+            progress.setValue(min(done, max(total, 1)))
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                raise rpd_csv.Cancelled
+
+        return progress, on_progress
+
+    def run_peaks_to_export(self) -> RunPeaksStore | None:
+        """The files' own RT windows of the targets, as the plots show them: None while they are linked."""
+        return None if self.data_stack_presenter.link_rt_windows else self.model.run_peaks
+
+    # problems of a file listed when it cannot be loaded, the rest counted
+    LOAD_PROBLEMS_SHOWN = 20
+
+    def load_targets_clicked(self, file_path: str | None = None):
+        """Import the targets of a .rpd.csv file, or of a file of RAPID2's Export Targets, asked for unless given."""
+        if file_path is None:
+            file_path, _filter = QFileDialog.getOpenFileName(
+                self.view, "Load Targets", self.model.settings_model.get_last_dir(),
+                f"RAPID2 targets (*{rpd_csv.SUFFIX});;RAPID2 (*.csv)",
+            )
+            if not file_path:
+                return
+        try:
+            groups = rpd_csv.read_targets_file(file_path)
+        except rpd_csv.TargetFileError as error:
+            listed = "\n".join(error.problems[:self.LOAD_PROBLEMS_SHOWN])
+            more = len(error.problems) - self.LOAD_PROBLEMS_SHOWN
+            QMessageBox.warning(
+                self.view, "Load Targets",
+                f"No targets were loaded. The file has these problems:\n\n{listed}" + (f"\n... and {more} more" if more > 0 else ""),
+            )
+            return
+        except OSError as error:
+            QMessageBox.warning(self.view, "Load Targets", f"The file could not be read.\n\n{error}")
+            return
+        self.model.settings_model.save_last_dir(file_path)
+        if not groups:
+            QMessageBox.information(self.view, "Load Targets", "The file has no targets.")
+            return
+        choices = self._choose_target_variants(groups)
+        if choices is None:
+            return
+        target_list_model = self.model.target_list_model
+        replace = False
+        if target_list_model.targets:
+            box = QMessageBox(
+                QMessageBox.Icon.Question, "Load Targets",
+                f"The list has targets already. Replace them with those of {Path(file_path).name}, or append those?",
+                parent=self.view,
+            )
+            replace_button = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+            append_button = box.addButton("Append", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() not in (replace_button, append_button):
+                return
+            replace = box.clickedButton() is replace_button
+        targets = rpd_csv.resolve_groups(groups, choices, first_index=1 if replace else target_list_model.next_index())
+        target_list_model.import_targets(targets, replace=replace)
+        self.target_panel_presenter.select_target(None)
+
+    def _choose_target_variants(self, groups: list[rpd_csv.ImportedGroup]) -> dict[int, int | None] | None:
+        """Of each '#' whose rows hold different targets, the variant to use, or None to keep them apart, as asked;
+        None if the import is cancelled. "Apply to all" takes the same choice for the rest: the variant at the same
+        position, or the last one of those with fewer."""
+        choices = {}
+        applied = None  # once "Apply to all" is ticked, (the choice,)
+        for group in groups:
+            if len(group.variants) == 1:
+                continue
+            if applied is not None:
+                choice = applied[0]
+                choices[group.number] = None if choice is None else min(choice, len(group.variants) - 1)
+                continue
+            differing = [
+                name for name in ("name", "formula", "adduct", "trace_type", "ms_level", "rt", "rt_tolerance", "mz",
+                                  "mz_tolerance", "mz_tolerance_unit", "precursor_mz", "collision_energy",
+                                  "isolation_width", "note")
+                if len({getattr(variant, name) for variant in group.variants}) > 1
+            ]
+            box = QMessageBox(
+                QMessageBox.Icon.Warning, "Load Targets",
+                f"The rows of target #{group.number} hold {len(group.variants)} different targets, "
+                f"differing in {', '.join(differing)}. Keep them as separate targets, or use the values of one row?",
+                parent=self.view,
+            )
+            separate_button = box.addButton("Keep as separate targets", QMessageBox.ButtonRole.AcceptRole)
+            use_buttons = [
+                box.addButton(f"Use values of line {lines[0]}", QMessageBox.ButtonRole.AcceptRole) for lines in group.lines
+            ]
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            apply_to_all = QCheckBox("Apply to all")
+            box.setCheckBox(apply_to_all)
+            box.exec()
+            if box.clickedButton() is separate_button:
+                choice = None
+            elif box.clickedButton() in use_buttons:
+                choice = use_buttons.index(box.clickedButton())
+            else:
+                return None
+            choices[group.number] = choice
+            if apply_to_all.isChecked():
+                applied = (choice,)
+        return choices
 
     def export_images_clicked(self):
         pass
@@ -214,3 +474,43 @@ class MainPresenter:
 
     def show_preferences(self):
         pass
+
+    ### AI assistant (MCP) ###
+    @property
+    def mcp_controller(self):
+        """Built on first use, so a window that never turns AI access on pays nothing."""
+        if self._mcp_controller is None:
+            from RAPID2_Agilent.mcp.controller import McpController
+
+            self._mcp_controller = McpController(self, parent=self.view)
+            self._mcp_controller.state_changed.connect(self._refresh_ai_assistant_state)
+        return self._mcp_controller
+
+    def apply_ai_assistant_setting(self) -> None:
+        """Turn AI access on at startup if the user left it on."""
+        if self.model.settings_model.mcp_server_enabled:
+            self.mcp_controller.apply_enabled(True)
+
+    def set_ai_assistant_access(self, enabled: bool) -> None:
+        controller = self.mcp_controller
+        controller.apply_enabled(enabled)
+        self.model.settings_model.mcp_server_enabled = controller.running
+        if enabled and not controller.running:
+            QMessageBox.warning(self.view, "AI Assistant Access", f"AI assistant access could not start.\n\n{controller.last_error}")
+        self._refresh_ai_assistant_state()
+
+    def copy_ai_assistant_command(self) -> None:
+        """Copy the one-time `claude mcp add ...` line for this computer."""
+        command = self.mcp_controller.client_command()
+        if command:
+            QApplication.clipboard().setText(command)
+
+    def _refresh_ai_assistant_state(self) -> None:
+        controller = self._mcp_controller
+        running = controller is not None and controller.running
+        self.view.set_ai_assistant_state(running, controller.label if running else None)
+
+    def shutdown(self) -> None:
+        """Stop serving and give up the window letter. Called as the application quits."""
+        if self._mcp_controller is not None:
+            self._mcp_controller.release()

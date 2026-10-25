@@ -71,18 +71,24 @@ class DiffOverview:
 def align_maps(map_a: MzRtMap, map_b: MzRtMap, is_cancelled: Callable[[], bool]) -> RTAlignment | None:
     """OBI-Warp-like alignment of B to A on the mid layers; None if cancelled.
 
+    NOTE: deliberately not `alignment.align_sources`. That one bins the raw scans
+    itself; here the map already holds them binned, and binning again would read
+    both files a second time. So only the similarity is computed here, from the
+    mid layers with the map's own asinh scale, and everything after it is the
+    shared `alignment.map_from_similarity`.
+
     The alignment package needs scipy, so it is imported only here.
     """
+    from dataclasses import replace
+
     from RAPID2_Agilent.alignment import (
         AlignmentConfig,
         ComputeConfig,
         compute_similarity,
-        extract_bijective_anchors,
-        fit_rt_mapping,
-        solve_alignment,
+        map_from_similarity,
     )
 
-    config = AlignmentConfig()
+    config = replace(AlignmentConfig(), extrapolation="linear")
     scale = map_a.default_scale()
     offset = _bin_offset(map_a.mid, map_b.mid)
     start, stop = max(0, -offset), min(map_a.mid.intensity.shape[1], map_b.mid.intensity.shape[1] - offset)
@@ -98,11 +104,10 @@ def align_maps(map_a: MzRtMap, map_b: MzRtMap, is_cancelled: Callable[[], bool])
     del profiles
     if is_cancelled():
         return None
-    path = solve_alignment(similarity, config.solver, config=config.dtw).path
-    anchors = extract_bijective_anchors(path, similarity, config.anchors)
-    mapping = fit_rt_mapping(
-        anchors, map_a.rt * SECONDS_PER_MINUTE, map_b.rt * SECONDS_PER_MINUTE, extrapolation="linear",
+    dtw, anchors, mapping = map_from_similarity(
+        similarity, map_a.rt * SECONDS_PER_MINUTE, map_b.rt * SECONDS_PER_MINUTE, config,
     )
+    path = dtw.path
     warped_rt = mapping.transform(map_b.rt * SECONDS_PER_MINUTE) / SECONDS_PER_MINUTE
     rows, weights = _resampling(warped_rt, map_a.rt)
     normalization = _normalization(map_a.mid, map_b.mid, rows, weights, threshold=scale)

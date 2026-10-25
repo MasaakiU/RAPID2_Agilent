@@ -8,6 +8,32 @@ def test_formula_mass_of_glucose():
 
 
 @pytest.mark.parametrize(
+    ("formula", "expected_mass"),
+    [
+        ("[13C]6H12O6", 186.083517),
+        ("C5[13C]H12O6", 181.066743),
+        ("C6H11[2H]O6", 181.069665),
+        ("C6H11DO6", 181.069665),
+    ],
+)
+def test_formula_mass_with_isotopes(formula, expected_mass):
+    assert formula_mass(formula) == pytest.approx(expected_mass, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("formula", "expected_counts"),
+    [
+        ("C6H3(CH3)3", {"C": 9, "H": 12}),
+        ("Ca(OH)2", {"Ca": 1, "O": 2, "H": 2}),
+        ("((CH3)3Si)2O", {"C": 6, "H": 18, "Si": 2, "O": 1}),
+        ("C6H5(CH2)2([13C]H3)", {"C": 8, "H": 12, "[13C]": 1}),
+    ],
+)
+def test_parse_formula_with_groups(formula, expected_counts):
+    assert parse_formula(formula) == expected_counts
+
+
+@pytest.mark.parametrize(
     ("adduct", "expected_mz"),
     [
         ("[M+H]+", 181.070665),
@@ -16,10 +42,20 @@ def test_formula_mass_of_glucose():
         ("[M+2H]2+", 91.038971),
         ("[2M-H]-", 359.119500),
         ("[M-H2O+H]+", 163.060100),
+        ("[M+FA-H]-", 225.061591),
+        ("[M+Hac-H]-", 239.077241),
     ],
 )
 def test_ion_mz_of_glucose(adduct, expected_mz):
     assert ion_mz("C6H12O6", adduct) == pytest.approx(expected_mz, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("solvent", "formula"),
+    [("ACN", "C2H3N"), ("IsoProp", "C3H8O"), ("DMSO", "C2H6OS"), ("FA", "CH2O2"), ("Hac", "C2H4O2"), ("TFA", "C2HF3O2")],
+)
+def test_solvent_in_adduct_is_its_formula(solvent, formula):
+    assert ion_mz("C6H12O6", f"[M+2{solvent}+H]+") == pytest.approx(ion_mz("C6H12O6", f"[M+2{formula}+H]+"), abs=1e-9)
 
 
 def test_parse_adduct_charge():
@@ -27,13 +63,20 @@ def test_parse_adduct_charge():
     assert parse_adduct("[M-H]-").charge == -1
 
 
-@pytest.mark.parametrize("formula", ["", "c6", "C6H12O6X", "C6 H12"])
+@pytest.mark.parametrize(
+    "formula",
+    ["", "c6", "C6H12O6X", "C6 H12", "13C6H12O6", "[13C", "[99C]6", "[C]6",
+     "(CH3", "CH3)2", "()", "C()2", "(2CH3)", "((CH3)2"],
+)
 def test_invalid_formula_raises(formula):
     with pytest.raises(ValueError):
         parse_formula(formula)
 
 
-@pytest.mark.parametrize("adduct", ["", "M+H", "[M+H]", "[M+Xx]+"])
+# a charge, multiplier or count of 0 too: no ion, no molecule, or nothing added
+@pytest.mark.parametrize(
+    "adduct", ["", "M+H", "[M+H]", "[M+Xx]+", "[M+2H]0+", "[0M+H]+", "[M+0Na+H]+", "[M+02H]2+", "[M+H]+2", "[M + H]+"],
+)
 def test_invalid_adduct_raises(adduct):
     with pytest.raises(ValueError):
         parse_adduct(adduct)

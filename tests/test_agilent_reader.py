@@ -10,10 +10,11 @@ import pytest
 
 from RAPID2_Agilent.io import AgilentReader
 from RAPID2_Agilent.models.rpd_model import AgilentDModel
+from tests.data_paths import DATA_DIR, require
 
 
-DATA_PATH = Path("tests/data/dummy_RP_2min_neg.d")
-MSMS_DATA_PATH = Path("tests/data/MSMS_data/9_PRJ_0-1-2_PA34-1_1uM_n1.d")
+DATA_PATH = DATA_DIR / "dummy_RP_2min_neg.d"
+MSMS_DATA_PATH = DATA_DIR / "MSMS_data" / "9_PRJ_0-1-2_PA34-1_1uM_n1.d"
 
 
 def test_reader_reads_real_data_without_qt_or_models():
@@ -55,7 +56,7 @@ def test_reader_reads_real_data_without_qt_or_models():
         assert reader.N_scans == 0
     """)
     result = subprocess.run(
-        [sys.executable, "-c", script, str(DATA_PATH.resolve())],
+        [sys.executable, "-c", script, str(require(DATA_PATH))],
         capture_output=True, text=True, timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -65,7 +66,7 @@ def test_reader_reads_real_data_without_qt_or_models():
 def test_ms_level_filters_traces_and_averaged_spectra(factory):
     data = factory()
     try:
-        data.load(MSMS_DATA_PATH)
+        data.load(require(MSMS_DATA_PATH))
         assert data.get_scan_type_summary() == [
             ("Negative MS1", 209), ("Negative MS2", 1024),
         ]
@@ -100,14 +101,15 @@ def test_ms_level_filters_traces_and_averaged_spectra(factory):
 def test_reload_replaces_data_and_releases_previous_profile(factory):
     data = factory()
     try:
-        data.load(DATA_PATH)
+        data.load(require(DATA_PATH))
         assert data.N_scans == 118
         previous_profile = data.ms_profile
-        data.load(MSMS_DATA_PATH)
+        data.load(require(MSMS_DATA_PATH))
         assert previous_profile._fh.closed
         assert previous_profile._mm.closed
         assert data.N_scans == 1233
         assert len(data.RT_list) == len(data.MS_level_list) == data.N_scans
+        assert len(data.precursor_mz_list) == len(data.isolation_width_list) == len(data.collision_energy_list) == data.N_scans
         assert data.file_path == MSMS_DATA_PATH
         mz, intensity = data.extract_spectrum(data.N_scans - 1)
         assert len(mz) == len(intensity) > 0
@@ -120,13 +122,14 @@ def test_reload_replaces_data_and_releases_previous_profile(factory):
     assert data.N_scans == 0
     assert data.RT_list is None
     assert data.MS_level_list is None
+    assert data.precursor_mz_list is None
     data.close()  # Closing twice is harmless.
 
 
 def test_model_metadata_tracks_reader_without_copied_state():
     model = AgilentDModel()
     try:
-        model.reader.load(DATA_PATH)
+        model.reader.load(require(DATA_PATH))
         assert model.file_path == model.reader.file_path
         assert model.RT_list is model.reader.RT_list
         assert model.MS_level_list is model.reader.MS_level_list

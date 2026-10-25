@@ -25,6 +25,13 @@ class AgilentReader:
         self.N_scans = 0
         self.RT_list: np.ndarray | None = None
         self.MS_level_list: np.ndarray | None = None
+        self.polarity_list: np.ndarray | None = None  # +1 positive, -1 negative
+        self.ion_mode_list: np.ndarray | None = None  # IonMode, e.g. 64 for ESI
+        self.scan_type_list: np.ndarray | None = None  # ScanType, e.g. 1 for Scan, 512 for ProductIon
+        # of each scan: the precursor m/z isolated, its isolation width and the collision energy; 0 for MS1 scans
+        self.precursor_mz_list: np.ndarray | None = None
+        self.isolation_width_list: np.ndarray | None = None
+        self.collision_energy_list: np.ndarray | None = None
         self.ms_scan_info: MSScanInfo = None
         self.ms_calib_info: MSCalibInfo = None
         self.ms_profile: MSProfile = None
@@ -103,6 +110,21 @@ class AgilentReader:
             self.ms_scan_info.get_scan_info(i, "MSLevel")
             for i in range(self.N_scans)
         ])
+        # the codes of the ionization and of the kind of scan, e.g. 64 (ESI); 1 (Scan) and 512 (ProductIon)
+        self.ion_mode_list, self.scan_type_list = (
+            np.array([self.ms_scan_info.get_scan_info(i, field) for i in range(self.N_scans)], dtype=np.int64)
+            for field in ("IonMode", "ScanType")
+        )
+        # +1 for positive ions, -1 for negative: the sign of an adduct's charge (IonPolarity 0 and 1; 0 if neither)
+        self.polarity_list = np.array([
+            {0: 1, 1: -1}.get(self.ms_scan_info.get_scan_info(i, "IonPolarity"), 0)
+            for i in range(self.N_scans)
+        ])
+        # which MS2 scans to use is chosen by these
+        self.precursor_mz_list, self.isolation_width_list, self.collision_energy_list = (
+            np.array([self.ms_scan_info.get_scan_info(i, field) for i in range(self.N_scans)], dtype=np.float64)
+            for field in ("MzOfInterest", "MzIsolationWidth", "CollisionEnergy")
+        )
 
     def close(self):
         """Release the mapped profile and return to the unloaded state."""
@@ -115,6 +137,12 @@ class AgilentReader:
         self.N_scans = 0
         self.RT_list = None
         self.MS_level_list = None
+        self.polarity_list = None
+        self.ion_mode_list = None
+        self.scan_type_list = None
+        self.precursor_mz_list = None
+        self.isolation_width_list = None
+        self.collision_energy_list = None
 
     def __enter__(self):
         return self
@@ -305,6 +333,66 @@ class AgilentReader:
                 stop_index
             ))
         return self.RT_list[scan_indices], np.array(inten_list)
+    def extract_averaged_sub_spectrum(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """The mean profile spectrum of the scans in [low_mz, high_mz) only, as extract_averaged_spectrum makes one over
+        all m/z: on the data points of the scan nearest to the middle of their RTs (or the next with any there), each
+        scan's added to the nearest of them."""
+        common_mz = None
+        accumulated_intensity = None
+        rt_list = self.RT_list[scan_indices]
+        representative = int(scan_indices[np.argmin(np.abs(rt_list - (rt_list.min() + rt_list.max()) / 2))])
+        for scan_index in [representative] + [int(i) for i in scan_indices if int(i) != representative]:
+            offset = self.ms_scan_info.get_spectrum_info(scan_index, self.spectrum_param_index, "SpectrumOffset")
+            start_t, delta_t, N_datapoints, _ = self.ms_profile.decode_header(offset)
+            calib_id = self.ms_scan_info.get_scan_info(scan_index, "CalibrationID")
+            start_index = self.ms_calib_info.search_index_below_mz(scan_index, N_datapoints, calib_id, start_t, delta_t, low_mz) + 1
+            stop_index = self.ms_calib_info.search_index_below_mz(scan_index, N_datapoints, calib_id, start_t, delta_t, high_mz) + 1
+            if stop_index <= start_index:
+                continue
+            inten_list = self.ms_profile.extract_sub_spectrum(scan_index, offset, start_index, stop_index).astype(np.float64)
+            mz_list = self.ms_calib_info.mz_values(scan_index, calib_id, start_t, delta_t, np.arange(start_index, stop_index))
+            if common_mz is None:
+                common_mz, accumulated_intensity = mz_list, np.zeros(len(mz_list))
+            insert_indices = np.searchsorted(common_mz, mz_list)
+            left_indices = np.clip(insert_indices - 1, 0, len(common_mz) - 1)
+            right_indices = np.clip(insert_indices, 0, len(common_mz) - 1)
+            use_right = np.abs(common_mz[right_indices] - mz_list) < np.abs(mz_list - common_mz[left_indices])
+            accumulated_intensity += np.bincount(
+                np.where(use_right, right_indices, left_indices), weights=inten_list, minlength=len(common_mz)
+            )
+        if common_mz is None:
+            return np.array([]), np.array([])
+        return common_mz, accumulated_intensity / len(scan_indices)
+    def mz_window_gaps(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> np.ndarray:
+        """Of each scan with no profile data point in [low_mz, high_mz), so that extract_chromatogram sums nothing: the
+        m/z spacing of the data points on either side of the window, or NaN when the window is beyond the scan's data;
+        0 for a scan with one."""
+        if scan_indices is None:
+            scan_indices = np.arange(self.N_scans)
+        gaps = np.zeros(len(scan_indices))
+        for i, scan_index in enumerate(scan_indices):
+            scan_index = int(scan_index)
+            offset = self.ms_scan_info.get_spectrum_info(scan_index, self.spectrum_param_index, "SpectrumOffset")
+            start_t, delta_t, N_datapoints, _ = self.ms_profile.decode_header(offset)
+            calib_id = self.ms_scan_info.get_scan_info(scan_index, "CalibrationID")
+            # as extract_chromatogram finds the data points in the window: [start_index, stop_index)
+            start_index = self.ms_calib_info.search_index_below_mz(scan_index, N_datapoints, calib_id, start_t, delta_t, low_mz) + 1
+            stop_index = self.ms_calib_info.search_index_below_mz(scan_index, N_datapoints, calib_id, start_t, delta_t, high_mz) + 1
+            between_points = 0 < start_index < N_datapoints
+            if start_index == stop_index and not between_points:
+                gaps[i] = np.nan
+                continue
+            if not between_points:
+                continue
+            mz_at = self.ms_calib_info.mz_function(scan_index, calib_id, start_t, delta_t)
+            spacing = mz_at(start_index) - mz_at(start_index - 1)
+            if start_index == stop_index:
+                gaps[i] = spacing
+            # on one time grid the spacing differs between scans only by their calibration's drift: a window wider
+            # than it in one scan holds a data point in every one
+            elif i == 0 and self.ms_calib_info.shares_grid and high_mz - low_mz > 1.1 * spacing:
+                break
+        return gaps
     def profile_mz_range(self, scan_indices: np.ndarray) -> Tuple[float, float]:
         """m/z range covered by the profile spectra of the scans."""
         min_x = min(self.ms_scan_info.get_spectrum_info(int(i), self.spectrum_param_index, "MinX") for i in scan_indices)
@@ -436,6 +524,11 @@ class MSCalibInfo():
                     "polynomial_flag": [char == '1' for char in reversed(format(int(step2.findtext("ValueUseFlags")), '08b'))],  # convert to binary and reverse to match the order of coefficients
                     "polynomial_coefficients":  [float(v.text) for v in step2.findall("./Values/Value")]
                 }
+    @property
+    def shares_grid(self) -> bool:
+        """Whether all scans have one time grid and polynomial correction, and differ only in coeff and base."""
+        return self._can_share_poly
+
     def configure_poly_cache(self, scan_grids: list, calibration_ids: list[int]) -> None:
         """Check once per load whether all scans can share one correction array.
 
@@ -509,25 +602,7 @@ class MSCalibInfo():
         This matches np.searchsorted(mz_list, low_mz, side="left") - 1 without
         materializing the full m/z array.
         """
-        coeff, base, left, right, a2, b2, c2, d2, e2, f2 = self.calib_info[scan_index]
-        poly_flag = self.default_calib_info[calib_id]["polynomial_flag"]
-        coefficients = (a2, b2, c2, d2, e2, f2)
-        poly_coeffs = [0.0] * 8
-        coeff_idx = 0
-        for polynomial_order, flag in enumerate(poly_flag):
-            if flag and coeff_idx < len(coefficients):
-                poly_coeffs[polynomial_order] = coefficients[coeff_idx]
-                coeff_idx += 1
-
-        def mz_at(datapoint_index: int) -> float:
-            t_value = start_t + delta_t * datapoint_index
-            t_clipped = min(max(t_value, left), right)
-            polynomial_correction = poly_coeffs[7]
-            for polynomial_order in range(6, -1, -1):
-                polynomial_correction = polynomial_correction * t_clipped + poly_coeffs[polynomial_order]
-            primary_term = coeff * (t_value - base)
-            return primary_term * primary_term - polynomial_correction
-
+        mz_at = self.mz_function(scan_index, calib_id, start_t, delta_t)
         if N_datapoints <= 0:
             return -1
         if low_mz <= mz_at(0):
@@ -544,6 +619,42 @@ class MSCalibInfo():
             else:
                 high_idx = mid_idx
         return low_idx - 1
+
+    def _calibration_terms(self, scan_index: int, calib_id: int):
+        """coeff, base, the clipping limits and the 8 polynomial coefficients (lowest order first) of a scan."""
+        coeff, base, left, right, a2, b2, c2, d2, e2, f2 = self.calib_info[scan_index]
+        poly_flag = self.default_calib_info[calib_id]["polynomial_flag"]
+        coefficients = (a2, b2, c2, d2, e2, f2)
+        poly_coeffs = [0.0] * 8
+        coeff_idx = 0
+        for polynomial_order, flag in enumerate(poly_flag):
+            if flag and coeff_idx < len(coefficients):
+                poly_coeffs[polynomial_order] = coefficients[coeff_idx]
+                coeff_idx += 1
+        return coeff, base, left, right, poly_coeffs
+
+    def mz_values(self, scan_index: int, calib_id: int, start_t: float, delta_t: float, datapoint_indices: np.ndarray) -> np.ndarray:
+        """The calibrated m/z of datapoint indices of the scan, as mz_function gives them one at a time."""
+        coeff, base, left, right, poly_coeffs = self._calibration_terms(scan_index, calib_id)
+        t_value = start_t + delta_t * np.asarray(datapoint_indices, dtype=np.float64)
+        polynomial_correction = np.polynomial.polynomial.polyval(np.clip(t_value, left, right), poly_coeffs)
+        primary_term = coeff * (t_value - base)
+        return primary_term * primary_term - polynomial_correction
+
+    def mz_function(self, scan_index: int, calib_id: int, start_t: float, delta_t: float):
+        """The calibrated m/z of a datapoint index of the scan, as a function: for a few points, without the full array."""
+        coeff, base, left, right, poly_coeffs = self._calibration_terms(scan_index, calib_id)
+
+        def mz_at(datapoint_index: int) -> float:
+            t_value = start_t + delta_t * datapoint_index
+            t_clipped = min(max(t_value, left), right)
+            polynomial_correction = poly_coeffs[7]
+            for polynomial_order in range(6, -1, -1):
+                polynomial_correction = polynomial_correction * t_clipped + poly_coeffs[polynomial_order]
+            primary_term = coeff * (t_value - base)
+            return primary_term * primary_term - polynomial_correction
+
+        return mz_at
 
 
 

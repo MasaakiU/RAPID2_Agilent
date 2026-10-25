@@ -8,16 +8,16 @@ import time
 import pyqtgraph as pg
 from PyQt6.QtWidgets import QApplication
 
-from pathlib import Path
 from RAPID2_Agilent.models.rpd_model import AgilentDModel
 from unittest.mock import patch, mock_open
+from tests.data_paths import DATA_DIR, require
 
 def test_model_load_logic():
     model = AgilentDModel()
     t0 = time.time()
 
     # select files
-    model.load(Path("tests/data/MSMS_data/9_PRJ_0-1-2_PA34-1_1uM_n1.d"))
+    model.load(require(DATA_DIR / "MSMS_data" / "9_PRJ_0-1-2_PA34-1_1uM_n1.d"))
     # model.load(Path("tests/data/dummy_RP_2min_neg.d"))
     
     # ### spectrum

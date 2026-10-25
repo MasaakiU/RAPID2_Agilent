@@ -1,16 +1,15 @@
-from pathlib import Path
-
 import numpy as np
 
 from RAPID2_Agilent.models.rpd_model import AgilentDModel
+from tests.data_paths import DATA_DIR, require
 
 
-DATA_PATH = Path("tests/data/dummy_RP_2min_neg.d")
+DATA_PATH = DATA_DIR / "dummy_RP_2min_neg.d"
 
 
 def load_dummy_model():
     model = AgilentDModel()
-    model.load(DATA_PATH)
+    model.load(require(DATA_PATH))
     return model
 
 

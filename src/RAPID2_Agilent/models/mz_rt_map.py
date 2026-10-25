@@ -15,7 +15,7 @@ from enum import Enum
 
 import numpy as np
 
-from .rpd_model import BaseMSDataModel
+from ..io.ms_data import MSData
 
 
 DETAIL_PPM = 10.0
@@ -85,7 +85,7 @@ class MapLevel(Enum):
 class MzRtMap:
     ms_level = 1
 
-    def __init__(self, ms_data_model: BaseMSDataModel):
+    def __init__(self, ms_data_model: MSData):
         self.ms_data_model = ms_data_model
         self.scan_indices = ms_data_model.scan_indices_for_ms_level(self.ms_level)
         self.rt = ms_data_model.RT_list[self.scan_indices]

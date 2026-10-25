@@ -1,16 +1,34 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=64", "Cython>=3"]  # setup.py builds the native extensions
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "RAPID2_Agilent"  # pip install する時の名前
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = [
-    "PyQt6",
     "numpy",
     "lxml",
     "scipy",  # RT alignment of the m/z-RT map's B - A view
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/RAPID2_Agilent"] # srcの中のどのフォルダをパッケージにするか指定
+[project.optional-dependencies]
+gui = ["PyQt6", "pyqtgraph"]
+diagnostics = ["matplotlib"]  # figures saved by the alignment CLI and rapid2_align_runs
+gpu = ["torch"]
+dev = ["pytest"]
+
+[project.scripts]
+rapid2-agilent = "RAPID2_Agilent.main:main"
+rapid2-agilent-mcp = "RAPID2_Agilent.mcp.relay.__main__:main"  # the stdio relay an AI client starts
+rapid2-agilent-cli = "RAPID2_Agilent.cli:main"  # the MCP analysis tools as commands
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["*._TODO_*"]
+
+[tool.setuptools.package-data]
+RAPID2_Agilent = ["resources/**/*", "alignment/examples/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src/RAPID2_Agilent/alignment/tests"]

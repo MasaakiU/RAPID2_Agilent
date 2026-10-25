@@ -9,6 +9,8 @@ from enum import Enum
 import numpy as np
 
 from RAPID2_Agilent.models.mz_rt_diff import DiffOverview, MzRtDiff
+from RAPID2_Agilent.models.target import TraceType
+from RAPID2_Agilent.services import operations
 
 
 class Diagnostics(Enum):
@@ -91,8 +93,8 @@ def path_similarity(diff: MzRtDiff) -> DiagnosticsPlot:
 
 def tic(diff: MzRtDiff, b_factor: float) -> DiagnosticsPlot:
     """TIC of A, and of B (times b_factor) before and after the alignment."""
-    rt_a, tic_a = diff.map_a.ms_data_model.extract_tic(scan_indices=diff.map_a.scan_indices)
-    rt_b, tic_b = diff.map_b.ms_data_model.extract_tic(scan_indices=diff.map_b.scan_indices)
+    rt_a, tic_a = operations.extract_trace(diff.map_a.ms_data_model, TraceType.TIC, scan_indices=diff.map_a.scan_indices)
+    rt_b, tic_b = operations.extract_trace(diff.map_b.ms_data_model, TraceType.TIC, scan_indices=diff.map_b.scan_indices)
     b_name = "B" if b_factor == 1.0 else f"B ×{b_factor:.3g}"
     curves = [
         Curve("a", rt_a, tic_a, "A"),

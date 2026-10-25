@@ -33,6 +33,24 @@ class AlignmentResult:
     normalized_query: np.ndarray | None = None
 
 
+def map_from_similarity(
+    similarity: np.ndarray, reference_rt_seconds: np.ndarray, query_rt_seconds: np.ndarray,
+    config: AlignmentConfig,
+) -> tuple[DTWResult, np.ndarray, RTMapping]:
+    """The DTW path, its one-to-one anchors and the query -> reference RT mapping.
+
+    The stages after the similarity matrix, shared by `align_sources` (raw scans)
+    and the GUI's B - A map (`models.mz_rt_diff.align_maps`, binned map layers):
+    only how the similarity is computed differs between the two.
+    """
+    dtw = solve_alignment(similarity, config.solver, config=config.dtw,
+                          reference_rt=reference_rt_seconds, query_rt=query_rt_seconds)
+    anchors = extract_bijective_anchors(dtw.path, similarity, config.anchors)
+    mapping = fit_rt_mapping(anchors, reference_rt_seconds, query_rt_seconds,
+                             extrapolation=config.extrapolation)
+    return dtw, anchors, mapping
+
+
 def align_sources(
     reference: ScanSource, query: ScanSource, config: AlignmentConfig, *,
     keep_profiles: bool = False, progress: Callable[[str], None] | None = None,
@@ -95,11 +113,7 @@ def align_sources(
     del a, b
     announce("Solving DTW and extracting bijective anchors")
     start = perf_counter()
-    dtw = solve_alignment(similarity, config.solver, config=config.dtw,
-                          reference_rt=reference.rt_seconds, query_rt=query.rt_seconds)
-    anchors = extract_bijective_anchors(dtw.path, similarity, config.anchors)
-    mapping = fit_rt_mapping(anchors, reference.rt_seconds, query.rt_seconds,
-                             extrapolation=config.extrapolation)
+    dtw, anchors, mapping = map_from_similarity(similarity, reference.rt_seconds, query.rt_seconds, config)
     timings["solver_mapping_seconds"] = perf_counter() - start
     return AlignmentResult(
         np.asarray(reference.rt_seconds).copy(), np.asarray(query.rt_seconds).copy(),

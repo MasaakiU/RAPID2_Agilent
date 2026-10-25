@@ -13,9 +13,13 @@ class MainModel:
         self.rpd_data_set_list = RPDDataSetList()
         self.settings_model = SettingsModel()
         self.target_list_model = TargetListModel()
+        self.run_peaks = self.target_list_model.run_peaks  # its edits are undone with those of the targets
 
     def add_ms_data_model(self, ms_data_model: BaseMSDataModel) -> RPDDataSet:
         return self.rpd_data_set_list.add_original(ms_data_model)
+
+    def keep_ms_data_models(self, ms_data_models: list[BaseMSDataModel]) -> None:
+        self.rpd_data_set_list.keep_originals(ms_data_models)
 
     # def on_save_clicked(self, save_path: str):
     #     meta_info = {

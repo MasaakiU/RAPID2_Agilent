@@ -1,38 +1,30 @@
-"""Run with python -m RAPID2_Agilent.alignment."""
+"""Run with python -m RAPID2_Agilent.alignment.
+
+The full-option alignment CLI: every alignment setting is a flag here, and it
+has the synthetic validation. `rapid2-agilent-cli align-runs` and the MCP tool
+take fewer options. All of them run the same jobs in `runner`, and their
+options become a configuration through the same `config.OPTIONS` table, so
+nothing about an alignment is decided in more than one place.
+"""
 
 import argparse
-from dataclasses import replace
 import json
 from pathlib import Path
 import sys
 
-from .config import AlignmentConfig, config_from_dict
-from .diagnostics import save_diagnostics, save_xic_overlay
-from .io import source_from_reader
-from .pipeline import align_agilent, align_sources
-from .representation import build_profile_matrix
+from .config import OPTIONS, AlignmentConfig, config_from_dict, with_options
+from .pipeline import align_sources
 from .result_io import save_result
+from .runner import align_and_save, check_output_dir, save_figures, scale_candidates
 from .synthetic import generate_synthetic_pair, mapping_errors
-from .transforms import suggest_scales
 
 
 def _configuration(args: argparse.Namespace) -> AlignmentConfig:
     config = config_from_dict(json.loads(args.config.read_text())) if args.config else AlignmentConfig()
-    for group, options in (
-        ("binning", {"ppm": args.ppm, "aggregation": args.aggregation}),
-        ("transform", {"scale": args.scale, "method": args.transform}),
-        ("compute", {"device": args.device, "metric": args.metric, "chunk_size": args.chunk_size}),
-        ("selection", {"max_scans": args.max_scans, "stride": args.scan_stride, "polarity": args.polarity,
-                       "reader_rt_unit": args.reader_rt_unit}),
-        ("dtw", {"rt_band_seconds": args.rt_band_seconds}),
-        ("anchors", {"stride": args.anchor_stride}),
-    ):
-        changes = {name: value for name, value in options.items() if value is not None}
-        config = replace(config, **{group: replace(getattr(config, group), **changes)})
-    return config
+    return with_options(config, **{name: getattr(args, name) for name in OPTIONS})
 
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Raw-scan LC-QTOF alignment; RT mapping direction is query → reference.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     align = subparsers.add_parser("align", help="Align two Agilent .d directories directly")
@@ -63,6 +55,11 @@ def main(argv: list[str] | None = None) -> None:
         command.add_argument("--anchor-stride", type=int)
     for command in (align, synthetic):
         command.add_argument("--output", type=Path, required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
         config = _configuration(args)
@@ -70,19 +67,17 @@ def main(argv: list[str] | None = None) -> None:
             from ..io import AgilentReader
             with AgilentReader() as reader:
                 reader.load(args.run)
-                source = source_from_reader(reader, config.selection)
-                profile = build_profile_matrix(source, config.binning)
-                print(json.dumps({"run": source.metadata, "scale_candidates": suggest_scales(profile.values)}, indent=2))
+                print(json.dumps(scale_candidates(reader, config), indent=2))
             return
-        config.transform.validate_for_use()
-        if any((args.output / name).exists() for name in ("mapping.json", "metadata.json", "diagnostics.npz")):
-            raise FileExistsError("Choose a new output directory; an alignment result already exists there")
 
         def progress(message: str) -> None:
             print(message, file=sys.stderr, flush=True)
 
-        truth = None
-        if args.command == "synthetic":
+        if args.command == "align":
+            align_and_save(args.reference, args.query, args.output, config, xic_windows=args.xic or (), progress=progress)
+        else:
+            config.transform.validate_for_use()
+            check_output_dir(args.output)
             pair = generate_synthetic_pair(n_reference=args.n_reference, n_query=args.n_query,
                                            strong_amplitude=args.strong_amplitude, seed=args.seed)
             result = align_sources(pair.reference, pair.query, config, progress=progress)
@@ -90,22 +85,12 @@ def main(argv: list[str] | None = None) -> None:
             errors = mapping_errors(result.mapping.transform(pair.query.rt_seconds), truth)
             result.metadata["synthetic_validation"] = errors
             print(json.dumps(errors, indent=2))
-        else:
-            result = align_agilent(args.reference, args.query, config, progress=progress)
-        save_result(result, args.output)
-        save_diagnostics(result, args.output / "diagnostics.png", truth=truth)
-        if args.command == "synthetic":
+            save_result(result, args.output)
+            save_figures(result, args.output, truth=truth)
             (args.output / "truth.json").write_text(json.dumps({
                 "query_seconds": pair.query.rt_seconds.tolist(),
                 "reference_seconds": truth.tolist(), "errors": errors,
             }, indent=2) + "\n")
-        elif args.xic:
-            from ..io import AgilentReader
-            with AgilentReader() as a, AgilentReader() as b:
-                a.load(args.reference)
-                b.load(args.query)
-                save_xic_overlay(source_from_reader(a, config.selection), source_from_reader(b, config.selection),
-                                 result.mapping, args.xic, args.output / "xic_overlay.png")
         print(f"Saved {args.output}")
     except (ValueError, FileNotFoundError, FileExistsError, NotImplementedError) as error:
         parser.error(str(error))

@@ -22,32 +22,25 @@ GUI、Qt、`AgilentDModel`には依存しません。
 | `dtw.py` | 類似度行列だけを受け取るpath solverとdispatcher |
 | `anchors.py` | ordered bijective anchorの抽出・間引き |
 | `mapping.py` | query → referenceのPCHIP RT変換 |
-| `pipeline.py` | 各stageをつなぐ実行入口 |
+| `config.py` | 設定。`OPTIONS`はCLIのフラグ・MCPの引数名から設定項目への唯一の対応表 |
+| `pipeline.py` | 各stageをつなぐ実行入口。`map_from_similarity`は類似度行列以降の共通部分（GUIのB − Aマップも使う） |
+| `runner.py` | CLIとMCPが共通に呼ぶ仕事（scale候補、アライメントの実行・保存・図） |
 | `result_io.py` | 設定、RT変換、raw path、診断配列の保存・再読込 |
 | `diagnostics.py` | 類似度、path、anchor、RT変換、補正量、XICの図 |
 | `synthetic.py` | 既知のsmooth driftとrun固有の強いionを含むscan生成 |
 
 ## CPU環境での準備
 
-既存プロジェクト環境で、repository rootから実行します。
+repository rootから、プロジェクトを図の保存に使うmatplotlibとともに登録します。
+Agilent native拡張もこのときビルドされるため、OSにC++ compilerが必要です。
+GUI依存（`gui` extra）は入らないので、Qtが不要な実行環境でもそのまま使えます。
+native拡張の詳細は`../io/README.md`を参照してください。
 
 ```sh
-python -m pip install -r src/RAPID2_Agilent/alignment/requirements.txt
+python -m pip install -e ".[diagnostics]"
 ```
 
-CPU実行にPyTorchは不要です。実装時の検証では依存を`/private/tmp/rapid-alignment-deps`
-に一時インストールし、既存conda環境のパッケージは変更していません。
-
-新しいマシンではプロジェクト自体の登録とAgilent native拡張のビルドも必要です。
-Qtが不要な実行環境では、次のようにGUI依存を自動インストールせずに登録できます。
-OSにC++ compilerが必要です。native拡張の詳細は`../io/README.md`を参照してください。
-
-```sh
-python -m pip install --no-deps -e .
-python -m pip install -r src/RAPID2_Agilent/alignment/requirements.txt
-python -m pip install lxml cython setuptools
-python src/RAPID2_Agilent/io/_native/build_extensions.py
-```
+CPU実行にPyTorchは不要です。
 
 ## 最初の実行
 
@@ -213,7 +206,7 @@ aligned_rt_minutes = mapping.transform(original_rt_minutes, unit="minutes")
 ## 検証
 
 ```sh
-python -m pip install -r src/RAPID2_Agilent/alignment/requirements-dev.txt
+python -m pip install -e ".[diagnostics,dev]"
 python -m pytest -q src/RAPID2_Agilent/alignment/tests
 ```
 

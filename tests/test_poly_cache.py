@@ -1,6 +1,5 @@
 """Polynomial reuse, file isolation and native buffer regression checks."""
 
-from pathlib import Path
 import struct
 
 import numpy as np
@@ -11,10 +10,11 @@ from RAPID2_Agilent.io import agilent_reader
 from RAPID2_Agilent.io.agilent_reader import MSCalibInfo
 from RAPID2_Agilent.io._native.calibrate_mz import calibrate_mz
 from RAPID2_Agilent.io._native.average_spectrum import accumulate_decoded_calibrated_nearest_bins
+from tests.data_paths import DATA_DIR, require
 
 
-DATA_PATH = Path("tests/data/dummy_RP_2min_neg.d")
-OTHER_DATA_PATH = Path("tests/data/9_P2-8-15_spl1_p0.d")
+DATA_PATH = DATA_DIR / "dummy_RP_2min_neg.d"
+OTHER_DATA_PATH = DATA_DIR / "9_P2-8-15_spl1_p0.d"
 
 
 def test_real_file_builds_one_poly_for_spectra_and_fused_average(monkeypatch):
@@ -27,7 +27,7 @@ def test_real_file_builds_one_poly_for_spectra_and_fused_average(monkeypatch):
 
     monkeypatch.setattr(agilent_reader, "calculate_poly", counted_calculate)
     with AgilentReader() as reader:
-        reader.load(DATA_PATH)
+        reader.load(require(DATA_PATH))
         calibration = reader.ms_calib_info
         assert calibration.poly is None
         reader.extract_chromatogram(499.99, 500.01)
@@ -50,16 +50,16 @@ def test_real_file_builds_one_poly_for_spectra_and_fused_average(monkeypatch):
 
 def test_poly_is_per_file_and_replaced_on_reload():
     with AgilentReader() as reader, AgilentReader() as other:
-        reader.load(DATA_PATH)
+        reader.load(require(DATA_PATH))
         reader.extract_spectrum(0)
         original_calibration = reader.ms_calib_info
         original_poly = original_calibration.poly
-        other.load(OTHER_DATA_PATH)
+        other.load(require(OTHER_DATA_PATH))
         other.extract_spectrum(0)
         assert other.ms_calib_info.poly is not original_poly
         assert len(other.ms_calib_info.poly) != len(original_poly)
 
-        reader.load(OTHER_DATA_PATH)
+        reader.load(require(OTHER_DATA_PATH))
         assert reader.ms_calib_info is not original_calibration
         assert reader.ms_calib_info.poly is None
         actual_mz, _ = reader.extract_spectrum(0)

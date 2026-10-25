@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -11,18 +10,20 @@ from PyQt6.QtWidgets import QApplication
 from RAPID2_Agilent.models.main_model import MainModel
 from RAPID2_Agilent.models.mz_rt_map import MID_FACTOR, MapLayer, MzRtMap, rasterize
 from RAPID2_Agilent.models.rpd_model import AgilentDModel
-from RAPID2_Agilent.models.target_model import ToleranceUnit, TraceType
+from RAPID2_Agilent.models.target import ToleranceUnit, TraceType
 from RAPID2_Agilent.presenters.main_presenter import MainPresenter
 from RAPID2_Agilent.views.main_window import MainWindow
 from RAPID2_Agilent.views.mz_rt_map.mz_rt_map_presenter import intensity_ticks
+from RAPID2_Agilent.views.view_constants import BROWSING_MARKER_COLOR, TARGET_MARKER_COLOR
+from tests.data_paths import DATA_DIR, require
 
 
-DATA_PATH = Path("tests/data/dummy_RP_2min_neg.d")
+DATA_PATH = DATA_DIR / "dummy_RP_2min_neg.d"
 
 
 def load_model() -> AgilentDModel:
     model = AgilentDModel()
-    model.load(DATA_PATH)
+    model.load(require(DATA_PATH))
     return model
 
 
@@ -124,7 +125,7 @@ def build_app():
     view = MainWindow()
     model = MainModel()
     presenter = MainPresenter(view, model)
-    presenter.open_d_folders_clicked([str(DATA_PATH), str(DATA_PATH)])
+    presenter.open_d_folders_clicked([str(require(DATA_PATH)), str(require(DATA_DIR / "dummy_RP_2min_neg_copy.d"))])
     return app, view, model, presenter
 
 
@@ -156,6 +157,19 @@ def test_map_window_builds_and_computes_detail_on_zoom():
 
     assert window.status_label.text() == "10 ppm bins"
     assert map_presenter._detail_layers[0].mz_edges[0] <= 200.0
+
+
+def test_marker_takes_the_selection_colour_while_a_target_is_edited():
+    app, view, model, presenter = build_app()
+    marker = view.mz_rt_map_window.marker
+    assert marker.pen.color().getRgb() == BROWSING_MARKER_COLOR
+
+    presenter.target_panel_presenter.add_target_from_view()
+    assert marker.pen.color().getRgb() == TARGET_MARKER_COLOR
+    assert {handle.pen.color().getRgb() for handle in marker.getHandles()} == {TARGET_MARKER_COLOR}
+
+    presenter.target_panel_presenter.select_target(None)
+    assert marker.pen.color().getRgb() == BROWSING_MARKER_COLOR
 
 
 def test_click_jumps_without_editing_selected_target():

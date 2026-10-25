@@ -1,0 +1,5 @@
+TINY = 2
+SMALL = 4
+MEDIUM = 8
+LARGE = 12
+HUGE = 16

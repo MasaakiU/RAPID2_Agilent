@@ -1,101 +1,20 @@
+"""Qt list model of the targets; the targets themselves are in target.py."""
+
 from __future__ import annotations
 
-import uuid
-from dataclasses import dataclass, field, replace
-from enum import StrEnum
+from collections.abc import Sequence
+from dataclasses import replace
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from .chemistry import ion_mz, parse_adduct, parse_formula
-
-
-class TraceType(StrEnum):
-    XIC = "XIC"
-    TIC = "TIC"
-    BPC = "BPC"
-
-
-class MSLevel(StrEnum):
-    ALL = "All"
-    MS1 = "MS1"
-    MS2 = "MS2"
-
-    @property
-    def number(self) -> int | None:
-        """MSLevel of the scans to use; None for all scans."""
-        return {MSLevel.ALL: None, MSLevel.MS1: 1, MSLevel.MS2: 2}[self]
-
-
-class ToleranceUnit(StrEnum):
-    MZ = "m/z"
-    PPM = "ppm"
-
-
-def new_target_id() -> str:
-    return uuid.uuid4().hex
-
-
-def tolerance_window(center: float, tolerance: float, unit: ToleranceUnit) -> tuple[float, float]:
-    half_width = center * tolerance * 1e-6 if unit is ToleranceUnit.PPM else tolerance
-    return center - half_width, center + half_width
-
-
-@dataclass(frozen=True)
-class Target:
-    index: int              # unique in the list; 1, 2, ... in the order of addition until reindexed
-    name: str
-    formula: str            # neutral molecule; "" when unknown
-    adduct: str             # carries charge and polarity, e.g. "[M+H]+"
-    trace_type: TraceType
-    ms_level: MSLevel
-    rt: float
-    rt_tolerance: float
-    mz: float               # precursor m/z for MS2 targets
-    mz_tolerance: float
-    mz_tolerance_unit: ToleranceUnit
-    product_ion: float | None = None        # MS2 only
-    collision_energy: float | None = None   # MS2 only
-    note: str = ""
-    id: str = field(default_factory=new_target_id)
-
-    def __post_init__(self):
-        if self.index < 1:
-            raise ValueError(f"index must be >= 1, got {self.index}")
-        parse_adduct(self.adduct)
-        if self.formula:
-            parse_formula(self.formula)
-        if not isinstance(self.trace_type, TraceType):
-            raise TypeError(f"trace_type must be TraceType, got {self.trace_type!r}")
-        if not isinstance(self.ms_level, MSLevel):
-            raise TypeError(f"ms_level must be MSLevel, got {self.ms_level!r}")
-        if not isinstance(self.mz_tolerance_unit, ToleranceUnit):
-            raise TypeError(f"mz_tolerance_unit must be ToleranceUnit, got {self.mz_tolerance_unit!r}")
-        if self.rt_tolerance < 0 or self.mz_tolerance < 0:
-            raise ValueError("Tolerances must be non-negative")
-        # the ppm control is an integer spin box
-        if self.mz_tolerance_unit is ToleranceUnit.PPM and not float(self.mz_tolerance).is_integer():
-            raise ValueError(f"ppm tolerance must be an integer, got {self.mz_tolerance}")
-        if self.ms_level is not MSLevel.MS2 and (self.product_ion is not None or self.collision_energy is not None):
-            raise ValueError("product_ion and collision_energy are only for MS2 targets")
-
-    def calculated_mz(self) -> float | None:
-        if not self.formula:
-            return None
-        return ion_mz(self.formula, self.adduct)
-
-    def mz_deviates_from_formula(self, decimals: int) -> bool:
-        calculated_mz = self.calculated_mz()
-        return calculated_mz is not None and round(calculated_mz, decimals) != round(self.mz, decimals)
-
-    def rt_window(self) -> tuple[float, float]:
-        return self.rt - self.rt_tolerance, self.rt + self.rt_tolerance
-
-    def mz_window(self) -> tuple[float, float]:
-        return tolerance_window(self.mz, self.mz_tolerance, self.mz_tolerance_unit)
+from .run_peaks import RunPeaks, RunPeaksStore
+from .target import Target
 
 
 class TargetListModel(QObject):
-    """Ordered target list with snapshot-based undo/redo of every edit."""
+    """Ordered target list with snapshot-based undo/redo of every edit; of the targets' RT windows in the files
+    (run_peaks) with them, which an edit of a target may change, as RunPeaksStore.follow does."""
 
     targets_reset = pyqtSignal()
     target_changed = pyqtSignal(str)
@@ -104,8 +23,10 @@ class TargetListModel(QObject):
     def __init__(self):
         super().__init__()
         self._targets: list[Target] = []
-        self._undo_stack: list[tuple[Target, ...]] = []
-        self._redo_stack: list[tuple[Target, ...]] = []
+        self.run_peaks = RunPeaksStore()
+        # (targets, run_peaks.snapshot())
+        self._undo_stack: list[tuple[tuple[Target, ...], dict]] = []
+        self._redo_stack: list[tuple[tuple[Target, ...], dict]] = []
 
     @property
     def targets(self) -> tuple[Target, ...]:
@@ -148,6 +69,39 @@ class TargetListModel(QObject):
         self.target_changed.emit(target_id)
         return new
 
+    def update_many(self, changes: dict[str, dict]) -> None:
+        """Change several targets, {target id: changes}, as one edit to undo; none of them if one cannot be."""
+        targets = list(self._targets)
+        changed_ids = []
+        for target_id, target_changes in changes.items():
+            if "index" in target_changes:
+                raise ValueError("Use reindex() to change indices")
+            index = self.index_of(target_id)
+            new = replace(targets[index], **target_changes)
+            if new != targets[index]:
+                targets[index] = new
+                changed_ids.append(target_id)
+        if not changed_ids:
+            return
+        self._push_undo()
+        self._targets = targets
+        for target_id in changed_ids:
+            self.target_changed.emit(target_id)
+
+    def import_targets(self, targets: list[Target], *, replace: bool) -> None:
+        """Put targets in place of the list, or after it, as one edit to undo."""
+        kept = [] if replace else self._targets
+        imported = kept + list(targets)
+        if len({target.id for target in imported}) < len(imported):
+            raise ValueError("Duplicate target id")
+        if len({target.index for target in imported}) < len(imported):
+            raise ValueError("Duplicate target index")
+        if imported == self._targets:
+            return
+        self._push_undo()
+        self._targets = imported
+        self.targets_reset.emit()
+
     def remove(self, target_ids: list[str]) -> None:
         indices = {self.index_of(target_id) for target_id in target_ids}
         if not indices:
@@ -168,6 +122,22 @@ class TargetListModel(QObject):
         self._targets = targets
         self.targets_reset.emit()
 
+    def set_run_peaks(self, changes: Sequence[tuple[str, str | Path, RunPeaks]]) -> None:
+        """Set the RunPeaks of targets in files, (target id, file, RunPeaks) each, as one edit to undo."""
+        changes = [change for change in changes if self.run_peaks.get(change[0], change[1]) != change[2]]
+        if not changes:
+            return
+        self._push_undo()
+        for target_id, run, run_peaks in changes:
+            self.run_peaks.set(target_id, run, run_peaks)
+
+    def set_found_run_peaks(self, found: Sequence[tuple[str, str | Path, RunPeaks]], *, keep_manual: bool) -> None:
+        """Set the peaks found of targets in files, (target id, file, RunPeaks) each, as one edit to undo; see
+        RunPeaksStore.set_found."""
+        self._push_undo()
+        for target_id, run, run_peaks in found:
+            self.run_peaks.set_found(target_id, run, run_peaks, keep_manual=keep_manual)
+
     def can_undo(self) -> bool:
         return bool(self._undo_stack)
 
@@ -176,22 +146,30 @@ class TargetListModel(QObject):
 
     def undo(self) -> None:
         previous = self._undo_stack.pop()
-        self._redo_stack.append(tuple(self._targets))
-        self._targets = list(previous)
+        self._redo_stack.append(self._snapshot())
+        self._restore(previous)
         self._emit_undo_state()
         self.targets_reset.emit()
 
     def redo(self) -> None:
         following = self._redo_stack.pop()
-        self._undo_stack.append(tuple(self._targets))
-        self._targets = list(following)
+        self._undo_stack.append(self._snapshot())
+        self._restore(following)
         self._emit_undo_state()
         self.targets_reset.emit()
 
     def _push_undo(self) -> None:
-        self._undo_stack.append(tuple(self._targets))
+        self._undo_stack.append(self._snapshot())
         self._redo_stack.clear()
         self._emit_undo_state()
+
+    def _snapshot(self) -> tuple[tuple[Target, ...], dict]:
+        return tuple(self._targets), self.run_peaks.snapshot()
+
+    def _restore(self, snapshot: tuple[tuple[Target, ...], dict]) -> None:
+        targets, run_peaks = snapshot
+        self._targets = list(targets)
+        self.run_peaks.restore(run_peaks)
 
     def _emit_undo_state(self) -> None:
         self.undo_state_changed.emit(self.can_undo(), self.can_redo())

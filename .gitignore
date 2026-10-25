@@ -1,0 +1,31 @@
+.python-version
+.DS_Store
+.vscode
+__pycache__/
+*_TODO_*
+
+# raw .d test data (MSProfile.bin exceeds GitHub's 100 MB limit)
+tests/data/
+
+# build artifacts (pip install -e . / python setup.py build_ext --inplace)
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+# Cython-generated sources and annotation files (hand-written *_cpp*.cpp are kept)
+src/RAPID2_Agilent/io/_native/**/*.cpp
+!src/RAPID2_Agilent/io/_native/**/*_cpp*.cpp
+src/RAPID2_Agilent/io/_native/**/*.html
+
+# reports written by tests/check_mz_grid_consistency.py
+tests/mz_grid_*.json
+
+# automatic peak detection (peakonly, Kensert et al.): on this machine only, not committed for now
+src/RAPID2_Agilent/resources/model/
+src/RAPID2_Agilent/services/peak_detection.py
+src/RAPID2_Agilent/services/peakonly_cnn.py
+src/RAPID2_Agilent/services/kensert_cnn.py
+src/RAPID2_Agilent/services/cnn_ops.py
+tests/test_peak_detection.py
+tests/peakonly_reference.npz

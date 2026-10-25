@@ -17,7 +17,10 @@ with AgilentReader() as reader:
 ```
 
 The scan indices refer to the original acquisition order. `RT_list` keeps the
-existing reader's `ScanTime` values without a unit conversion. The reader also
+existing reader's `ScanTime` values without a unit conversion. For choosing MS2
+scans, `precursor_mz_list`, `isolation_width_list` and `collision_energy_list`
+hold each scan's `MzOfInterest`, `MzIsolationWidth` and `CollisionEnergy` (0 for
+MS1 scans); `services.operations.precursors` lists them for the GUI. The reader also
 supports XIC, TIC, BPC and averaged-spectrum extraction, with optional scan
 selection. The reading and numerical algorithms are shared with the GUI.
 
@@ -33,6 +36,12 @@ retaining a shared array. Reloading creates a new `MSCalibInfo` with `poly=None`
 The Python reference calibration and scalar XIC boundary search remain usable
 without creating the full correction array.
 
+`run_hashes` gives the two SHA-256 of a run that the .rpd.csv export writes:
+`scan_sha256` of `AcqData/MSScan.bin`, quick, to look for a run by, and
+`data_sha256` of its data files, to tell it is the very run
+(docs/rpd_csv_format.md, section 3.3). `run_hashes()` keeps them for the
+session, and reads a run again only once one of its files has changed.
+
 ## Native extensions
 
 The existing Cython/C++ sources and local binaries are now under `io/_native/`.
@@ -41,21 +50,21 @@ rebuild them on a different execution environment. Runtime dependencies of this
 reader are NumPy, lxml and these native extensions. Building from `.pyx` also
 requires Cython and a C++ compiler compatible with the flags in those files.
 
-Build from the project root with the project Python environment:
+Installing the project builds them in place (`setup.py` at the project root):
 
 ```sh
-python src/RAPID2_Agilent/io/_native/build_extensions.py
-# Or rebuild only the polynomial-related modules:
-python src/RAPID2_Agilent/io/_native/build_extensions.py calibrate_mz average_spectrum
+python -m pip install -e .
+# After editing the .pyx/.cpp/.hpp sources, rebuild all modules in place:
+python setup.py build_ext --inplace --force
 ```
 
 Rebuild both `calibrate_mz.pyx` and `average_spectrum.pyx` after changes to their
 shared polynomial-array interface. The native calibration now takes a required
 `poly` array; `calculate_poly` builds it separately using the native arithmetic.
-The build helper keeps C++ source paths relative to the native directory even
-when Cython recognizes the surrounding Python package.
+`setup.py` resolves the C++ sources named in the `.pyx` directives relative to
+the native directory, so the build runs from the project root.
 
-The top-level project still declares the GUI dependencies, and installing it does
-not currently build these native extensions automatically. A separate GPU
-environment's installation and build workflow remains to be configured when that
-environment is selected; no GPU alignment implementation is included here.
+The GUI dependencies are the optional `gui` extra, so the reader can be installed
+without Qt. A separate GPU environment's installation and build workflow remains
+to be configured when that environment is selected; no GPU alignment
+implementation is included here.

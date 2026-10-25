@@ -1,6 +1,6 @@
 """Explicit settings; all alignment RTs and RT windows use seconds."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 
 
@@ -138,3 +138,38 @@ def config_from_dict(values: dict) -> AlignmentConfig:
         return AlignmentConfig(**values)
     except TypeError as error:
         raise ValueError(f"Invalid configuration: {error}") from error
+
+
+# The flat options a command line or a tool call names, and the field each one
+# sets. The one place such a name becomes a configuration: the alignment CLI's
+# flags, `rapid2-agilent-cli` and the MCP tools all pass these names.
+OPTIONS = {
+    "ppm": ("binning", "ppm"),
+    "aggregation": ("binning", "aggregation"),
+    "transform": ("transform", "method"),
+    "scale": ("transform", "scale"),
+    "metric": ("compute", "metric"),
+    "device": ("compute", "device"),
+    "chunk_size": ("compute", "chunk_size"),
+    "polarity": ("selection", "polarity"),
+    "reader_rt_unit": ("selection", "reader_rt_unit"),
+    "max_scans": ("selection", "max_scans"),
+    "scan_stride": ("selection", "stride"),
+    "rt_band_seconds": ("dtw", "rt_band_seconds"),
+    "anchor_stride": ("anchors", "stride"),
+}
+
+
+def with_options(config: AlignmentConfig, **options) -> AlignmentConfig:
+    """`config` with the named OPTIONS replaced; None leaves an option as it is."""
+    unknown = sorted(set(options) - set(OPTIONS))
+    if unknown:
+        raise ValueError(f"Unknown alignment option(s): {', '.join(unknown)}")
+    changes: dict[str, dict] = {}
+    for name, value in options.items():
+        if value is not None:
+            group, field_name = OPTIONS[name]
+            changes.setdefault(group, {})[field_name] = value
+    for group, fields in changes.items():
+        config = replace(config, **{group: replace(getattr(config, group), **fields)})
+    return config

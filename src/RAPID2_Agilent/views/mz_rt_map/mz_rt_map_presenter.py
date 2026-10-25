@@ -9,9 +9,10 @@ from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 from RAPID2_Agilent.models.mz_rt_diff import DiffOverview, DiffParams, MzRtDiff, RTAlignment, align_maps, rasterize_diff
 from RAPID2_Agilent.models.mz_rt_map import MapLayer, MapLevel, MzRtMap, rasterize
 from RAPID2_Agilent.models.rpd_model import BaseMSDataModel
-from RAPID2_Agilent.models.target_model import TraceType
+from RAPID2_Agilent.models.target import TraceType
 from RAPID2_Agilent.views.data_stack import ChromatogramSpectrumStackPresenter
 from RAPID2_Agilent.views.target_panel import TargetPanelPresenter
+from RAPID2_Agilent.views.view_constants import BROWSING_MARKER_COLOR, TARGET_MARKER_COLOR
 
 from .diagnostics import Diagnostics, DiagnosticsPlot, dtw_path, path_similarity, rt_shift, squared_difference, tic
 from .mz_rt_map_window import MzRtMapWindow
@@ -28,6 +29,7 @@ class _Task(QRunnable):
 
     def __init__(self, work: Callable[[Callable[[int, int], None], Callable[[], bool]], object]):
         super().__init__()
+        self.setAutoDelete(False)  # the pool would delete the C++ side while Python still owns the wrapper
         self.work = work
         self.signals = _TaskSignals()
         self._cancelled = threading.Event()
@@ -89,8 +91,12 @@ class MzRtMapPresenter(QObject):
         self.window.fold_change_limit_changed.connect(lambda _limit: self._show_raster())
         self.window.view_range_changed.connect(self.render)
         self.window.clicked.connect(self.target_panel_presenter.jump_to)
+        self.target_panel_presenter.editing_target_changed.connect(
+            lambda editing: self.window.set_marker_color(TARGET_MARKER_COLOR if editing else BROWSING_MARKER_COLOR)
+        )
         self.window.marker_range_changed.connect(self.on_marker_range_changed)
         self.data_stack_presenter.model_added.connect(lambda _model: self._update_file_list())
+        self.data_stack_presenter.models_changed.connect(self.on_models_changed)
         self.data_stack_presenter.current_windows_changed.connect(self.update_marker)
 
     def show(self):
@@ -109,6 +115,31 @@ class MzRtMapPresenter(QObject):
 
     def on_compare_file_selected(self, index: int):
         self.select_compare_model(None if index < 0 else self.data_stack_presenter.models[index])
+
+    def on_models_changed(self):
+        """Files reordered or closed: forget what was built for a closed one.
+
+        A closed, the first file left is A while the window is shown; while it is hidden, none, and show() picks one
+        then, rather than a map being built for a window nobody sees.
+        """
+        models = self.data_stack_presenter.models
+        for model in [model for model in self._maps if model not in models]:
+            del self._maps[model]
+        self._scales = {model: scale for model, scale in self._scales.items() if model in models}
+        self._alignments = {
+            pair: alignment for pair, alignment in self._alignments.items() if pair[0] in models and pair[1] in models
+        }
+        current_closed = self.current_model is not None and self.current_model not in models
+        compare_closed = self.compare_model is not None and self.compare_model not in models
+        if not current_closed and not compare_closed:
+            self._update_file_list()
+            return
+        if current_closed:
+            self.current_model = models[0] if models and self.window.isVisible() else None
+            self._show_whole_range = True
+        if compare_closed or self.compare_model is self.current_model:
+            self.compare_model = None
+        self._on_selection_changed()
 
     def select_model(self, model: BaseMSDataModel):
         """Set A."""

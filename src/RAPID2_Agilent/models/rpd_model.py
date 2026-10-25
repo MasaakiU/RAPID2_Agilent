@@ -10,6 +10,14 @@ from ..io.agilent_reader import AgilentReader, MSCalibInfo, MSProfile, MSScanInf
 
 
 class BaseMSDataModel(QObject):
+    """The Qt-facing face of one data file.
+
+    NOTE: the method list mirrors `RAPID2_Agilent.io.MSData`, which is what the
+    shared code (`services.operations`, the m/z x RT map) is written against.
+    Extend the protocol first and this class with it, so that every caller can
+    keep taking either a model or a bare AgilentReader.
+    """
+
     settings_status_changed = pyqtSignal(str, object)
 
     @property
@@ -28,6 +36,30 @@ class BaseMSDataModel(QObject):
     def MS_level_list(self) -> np.ndarray | None:
         raise NotImplementedError
 
+    @property
+    def polarity_list(self) -> np.ndarray | None:
+        raise NotImplementedError
+
+    @property
+    def ion_mode_list(self) -> np.ndarray | None:
+        raise NotImplementedError
+
+    @property
+    def scan_type_list(self) -> np.ndarray | None:
+        raise NotImplementedError
+
+    @property
+    def precursor_mz_list(self) -> np.ndarray | None:
+        raise NotImplementedError
+
+    @property
+    def isolation_width_list(self) -> np.ndarray | None:
+        raise NotImplementedError
+
+    @property
+    def collision_energy_list(self) -> np.ndarray | None:
+        raise NotImplementedError
+
     def load(self, path: Path):
         raise NotImplementedError
 
@@ -40,7 +72,13 @@ class BaseMSDataModel(QObject):
     def extract_averaged_spectrum(self, rt_min: float, rt_max: float, mode: str = "mean", *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray, int]:
         raise NotImplementedError
 
+    def extract_averaged_sub_spectrum(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError
+
     def extract_chromatogram(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError
+
+    def mz_window_gaps(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> np.ndarray:
         raise NotImplementedError
 
     def extract_tic(self, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -85,6 +123,11 @@ class RPDDataSetList(QObject):
         self.add(data_set)
         return data_set
 
+    def keep_originals(self, ms_data_models: List[BaseMSDataModel]) -> None:
+        """Keep the data sets of these original models only, in their order (files reordered or closed)."""
+        by_original = {data_set.original: data_set for data_set in self._data_sets}
+        self._data_sets = [by_original[model] for model in ms_data_models if model in by_original]
+
 class AgilentDModel(BaseMSDataModel):
     """Qt-facing model delegating raw-data access to an AgilentReader."""
 
@@ -107,6 +150,30 @@ class AgilentDModel(BaseMSDataModel):
     @property
     def MS_level_list(self) -> np.ndarray | None:
         return self.reader.MS_level_list
+
+    @property
+    def polarity_list(self) -> np.ndarray | None:
+        return self.reader.polarity_list
+
+    @property
+    def ion_mode_list(self) -> np.ndarray | None:
+        return self.reader.ion_mode_list
+
+    @property
+    def scan_type_list(self) -> np.ndarray | None:
+        return self.reader.scan_type_list
+
+    @property
+    def precursor_mz_list(self) -> np.ndarray | None:
+        return self.reader.precursor_mz_list
+
+    @property
+    def isolation_width_list(self) -> np.ndarray | None:
+        return self.reader.isolation_width_list
+
+    @property
+    def collision_energy_list(self) -> np.ndarray | None:
+        return self.reader.collision_energy_list
 
     @property
     def AcqData_path(self) -> Path:
@@ -150,6 +217,9 @@ class AgilentDModel(BaseMSDataModel):
     def extract_averaged_spectrum(self, rt_min: float, rt_max: float, mode: str = "mean", *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray, int]:
         return self.reader.extract_averaged_spectrum(rt_min, rt_max, mode, scan_indices=scan_indices)
 
+    def extract_averaged_sub_spectrum(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        return self.reader.extract_averaged_sub_spectrum(low_mz, high_mz, scan_indices=scan_indices)
+
     def extract_averaged_spectrum_python(self, rt_min: float, rt_max: float, mode: str = "mean", *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray, int]:
         return self.reader.extract_averaged_spectrum_python(rt_min, rt_max, mode, scan_indices=scan_indices)
 
@@ -158,6 +228,9 @@ class AgilentDModel(BaseMSDataModel):
 
     def extract_chromatogram(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
         return self.reader.extract_chromatogram(low_mz, high_mz, scan_indices=scan_indices)
+
+    def mz_window_gaps(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> np.ndarray:
+        return self.reader.mz_window_gaps(low_mz, high_mz, scan_indices=scan_indices)
 
     def extract_tic(self, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
         return self.reader.extract_tic(scan_indices=scan_indices)

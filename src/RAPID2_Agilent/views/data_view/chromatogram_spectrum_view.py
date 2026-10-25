@@ -1,19 +1,21 @@
+from collections.abc import Sequence
+
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QMenu, QWidget
+
+from RAPID2_Agilent.views.data_view.peak_label_item import PeakLabelItem
+from RAPID2_Agilent.views.view_constants import (
+    BROWSING_RANGE_LABEL_COLOR,
+    BROWSING_REGION_COLOR,
+    PEAK_AREA_COLOR,
+    PLOT_WARNING_COLOR,
+)
 
 
-def make_label_html(text: str = "", size: int = 2) -> str:
-    return f"<font size='{size}' color='#808080'>{text}</font>"
-
-
-def main_r_pen():
-    return pg.mkPen("#FF000032", width=2)
-
-
-def main_r_brush():
-    return pg.mkBrush("#FF000032")
+def make_label_html(text: str = "", size: int = 2, color: str = "#808080") -> str:
+    return f"<font size='{size}' color='{color}'>{text}</font>"
 
 
 class ExpAxisItem(pg.AxisItem):
@@ -129,12 +131,27 @@ class MyPlotItem(pg.PlotItem):
         return self.viewRange()[1]
 
 
+class WindowRegionItem(pg.LinearRegionItem):
+    """The RT / m/z window, which asks for its menu when right-clicked (but while it is dragged, which that undoes)."""
+    menu_requested = pyqtSignal(object)  # the QPointF on the screen
+
+    def mouseClickEvent(self, ev):
+        if ev.button() == Qt.MouseButton.RightButton and not self.moving:
+            ev.accept()
+            self.menu_requested.emit(ev.screenPos())
+            return
+        super().mouseClickEvent(ev)
+
+
 class MyPlotWidget(pg.PlotWidget):
     view_box_clicked = pyqtSignal(float, float)
     wheel_event_forwarded = pyqtSignal(object)
+    cursor_moved = pyqtSignal(float, float)  # (x, y) of the local crosshair
+    cursor_left = pyqtSignal()
 
     left_axis_width = 48
     axis_color = "#000000"
+    cursor_label_color = "#EDA0A0"
     plot_color = "#1f77b4"
 
     def __init__(self, parent=None, initial_plot_count: int = 1):
@@ -148,6 +165,7 @@ class MyPlotWidget(pg.PlotWidget):
             axisItems={"left": self.left_axis, "bottom": bottom_axis},
         )
         super().__init__(parent=parent, plotItem=plot_item)
+        plot_item.setMenuEnabled(False)  # pyqtgraph's, of no use here
 
         self.setBackground("w")
         self.vb().setMouseMode(pg.ViewBox.RectMode)
@@ -161,14 +179,39 @@ class MyPlotWidget(pg.PlotWidget):
         self.plot_items: list[pg.PlotDataItem] = []
         for _ in range(initial_plot_count):
             self.add_plot_item()
+        # the primary line across points not measured, dashed: as an area is integrated over them
+        self.bridge_item = pg.PlotDataItem(pen=pg.mkPen(self.plot_color, width=1, style=Qt.PenStyle.DashLine))
+        self.bridge_item.setZValue(2)
+        self.addItem(self.bridge_item)
 
-        self.region0 = pg.LinearRegionItem(pen=main_r_pen(), brush=main_r_brush())
+        self.region0 = WindowRegionItem()
+        self.set_region_color(BROWSING_REGION_COLOR)
         self.addItem(self.region0)
 
         self.exp_label = pg.TextItem(anchor=(0, 0), html=make_label_html("e0"))
         self.exp_label.setParentItem(self.vb())
-        self.top_right_label = pg.TextItem(anchor=(1, 0), html=make_label_html())
+        self.range_label_color = BROWSING_RANGE_LABEL_COLOR
+        self.range_label_text = ""
+        self.top_right_label = pg.TextItem(anchor=(1, 0), html=make_label_html(color=self.range_label_color))
         self.top_right_label.setParentItem(self.vb())
+        self.cursor_label = pg.TextItem(anchor=(1, 0), html=make_label_html(color=self.cursor_label_color))
+        self.cursor_label.setParentItem(self.vb())
+        # what is wrong with the data drawn, if anything, in the middle of the plot, under a notice of what it is
+        self.warning_label = pg.TextItem(anchor=(0.5, 0.5), html=make_label_html(color=PLOT_WARNING_COLOR))
+        self.warning_label.setParentItem(self.vb())
+        self.notice_text = ""
+        self.warning_text = ""
+        for label in (self.exp_label, self.top_right_label, self.cursor_label, self.warning_label):
+            label.textItem.document().setDocumentMargin(0)
+
+        crosshair_pen = pg.mkPen("#FF0000", width=1)
+        self.crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
+        self.crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=crosshair_pen)
+        for line in (self.crosshair_v, self.crosshair_h):
+            line.setZValue(3)
+            line.setVisible(False)
+            self.addItem(line, ignoreBounds=True)
+        self.scene().sigMouseMoved.connect(self.on_mouse_moved)
 
         self.vb().view_box_clicked.connect(self.view_box_clicked.emit)
         self.vb().sigResized.connect(self.vb_resized)
@@ -177,6 +220,19 @@ class MyPlotWidget(pg.PlotWidget):
 
     def vb(self):
         return self.plotItem.vb
+
+    def set_region_color(self, color: tuple[int, int, int, int]):
+        """The RT / m/z window in ``color`` (RGBA), its area and its edges.
+
+        Under the mouse, as pyqtgraph's own defaults were for the former red window: the area twice
+        as opaque, an edge in the colour, opaque.
+        """
+        self.region0.setBrush(pg.mkBrush(color))
+        self.region0.setHoverBrush(pg.mkBrush((*color[:3], min(2 * color[3], 255))))
+        for line in self.region0.lines:
+            line.setPen(pg.mkPen(color, width=2))
+            line.setHoverPen(pg.mkPen((*color[:3], 255), width=2))
+        self.region0.update()
 
     @classmethod
     def _set_axis_color(cls, axis: pg.AxisItem):
@@ -194,10 +250,11 @@ class MyPlotWidget(pg.PlotWidget):
         if x_list is None or y_list is None:
             return None, None
         local_area = (min_x <= x_list) & (x_list <= max_x)
-        local_y = y_list[local_area]
+        # points not measured are NaN
+        local_y = y_list[local_area & np.isfinite(y_list)]
         if len(local_y) == 0:
             return None, None
-        return np.nanmin(local_y), np.nanmax(local_y)
+        return np.min(local_y), np.max(local_y)
 
     def add_plot_item(self, *, pen=None, name=None) -> pg.PlotDataItem:
         plot_item = pg.PlotDataItem(pen=pen or pg.mkPen(self.plot_color, width=1), name=name)
@@ -209,9 +266,24 @@ class MyPlotWidget(pg.PlotWidget):
     def set_plot_data(self, index: int, x, y, **kwargs):
         self.plot_items[index].setData(x, y, **kwargs)
 
-    def set_primary_plot_data(self, x, y, **kwargs):
+    def set_primary_plot_data(self, x, y, *, missing: np.ndarray | None = None, **kwargs):
+        """missing: of each point, whether it was not measured; the line leaves those out and joins the points on
+        either side of them dashed."""
+        if missing is not None and missing.any():
+            y = np.where(missing, np.nan, np.asarray(y, dtype=float))
+            kwargs["connect"] = "finite"
+            measured = np.flatnonzero(~missing)
+            # measured points with ones not measured between them, joined in pairs
+            jumps = np.flatnonzero(np.diff(measured) > 1)
+            ends = np.column_stack((measured[jumps], measured[jumps + 1])).ravel()
+            self.bridge_item.setData(x[ends], y[ends], connect="pairs")
+        else:
+            kwargs.setdefault("connect", "auto")
+            self.bridge_item.setData([], [])
         self.set_plot_data(0, x, y, **kwargs)
-        self.set_initial_x_range(float(x[0]), float(x[-1]))
+        # empty when a file has no scans of the choice, e.g. no MS2 scans of the precursor
+        if len(x):
+            self.set_initial_x_range(float(x[0]), float(x[-1]))
         self.apply_y_range_policy()
 
     def set_auto_y_range_enabled(self, enabled: bool):
@@ -265,6 +337,9 @@ class MyPlotWidget(pg.PlotWidget):
         bounds_provider = self.y_range_bounds_provider or self.get_displayed_y_bounds
         y_min, y_max = bounds_provider(*x_view_range, index=index)
         if y_min is not None:
+            # 0 is always shown, and the data sit in the vertical middle: from 0 to the max plus the min
+            if y_min >= 0:
+                y_min, y_max = 0.0, y_max + y_min
             self._applying_y_range_policy = True
             try:
                 self.plotItem.setMyYRange(y_min, y_max)
@@ -279,24 +354,137 @@ class MyPlotWidget(pg.PlotWidget):
             return
         self.apply_y_range_policy()
 
+    def on_mouse_moved(self, scene_pos):
+        vb = self.vb()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self.hide_crosshair()
+            return
+        point = vb.mapSceneToView(scene_pos)
+        x_value, y_value = point.x(), point.y()
+        self.crosshair_v.setPos(x_value)
+        self.crosshair_h.setPos(y_value)
+        self.crosshair_v.setVisible(True)
+        self.crosshair_h.setVisible(True)
+        self._set_cursor_text(f"({x_value:.4f}, {y_value:.3g})")
+        self.cursor_moved.emit(float(x_value), float(y_value))
+
+    def set_shared_cursor(self, x_value: float, y_value: float):
+        """Show the crosshair position of a linked plot."""
+        self.crosshair_v.setPos(x_value)
+        self.crosshair_h.setPos(y_value)
+        self.crosshair_v.setVisible(True)
+        self.crosshair_h.setVisible(True)
+        self._set_cursor_text(f"({x_value:.4f}, {y_value:.3g})")
+
+    def _set_cursor_text(self, text: str):
+        self.cursor_label.setHtml(make_label_html(text, color=self.cursor_label_color))
+        self._place_top_right_labels()
+
+    def clear_cursor(self):
+        self.crosshair_v.setVisible(False)
+        self.crosshair_h.setVisible(False)
+        self.cursor_label.setHtml(make_label_html(color=self.cursor_label_color))
+
+    def hide_crosshair(self):
+        was_visible = self.crosshair_v.isVisible()
+        self.clear_cursor()
+        if was_visible:
+            self.cursor_left.emit()
+
+    def leaveEvent(self, ev):
+        self.hide_crosshair()
+        super().leaveEvent(ev)
+
+    def _place_top_right_labels(self):
+        width = self.vb().boundingRect().width()
+        self.top_right_label.setPos(width, 0)
+        self.cursor_label.setPos(width, self.top_right_label.boundingRect().height())
+
     def vb_resized(self, vb=None):
-        vb = vb or self.vb()
-        geometry = vb.screenGeometry()
         self.exp_label.setPos(0, 0)
-        self.top_right_label.setPos(geometry.width(), 0)
+        rect = self.vb().boundingRect()
+        self.warning_label.setPos(rect.width() / 2, rect.height() / 2)
+        # wrapped, so that a long one is read whole in a narrow plot
+        self.warning_label.setTextWidth(max(1.0, rect.width()))
+        self._place_top_right_labels()
+
+    def set_warning_html(self, text: str):
+        """A warning about the data drawn, in red in the middle; "" for none."""
+        self.warning_text = text
+        self._show_warning()
+
+    def set_notice_html(self, text: str):
+        """Which data are drawn, in red in the middle above the warning: of the targets selected, the one shown;
+        "" for none."""
+        self.notice_text = text
+        self._show_warning()
+
+    def _show_warning(self):
+        text = "<br>".join(part for part in (self.notice_text, self.warning_text) if part)
+        self.warning_label.setHtml(f"<div align='center'>{make_label_html(text, color=PLOT_WARNING_COLOR)}</div>")
 
     def set_exponent_label(self, exponent: int):
         self.exp_label.setHtml(make_label_html(f"e{exponent}"))
 
     def set_top_right_label_html(self, text: str):
-        self.top_right_label.setHtml(text)
+        self.range_label_text = text
+        self.top_right_label.setHtml(make_label_html(text, color=self.range_label_color))
+        self._place_top_right_labels()
+
+    def set_range_label_color(self, color: str):
+        self.range_label_color = color
+        self.set_top_right_label_html(self.range_label_text)
 
 
 class ChromatogramWindow(MyPlotWidget):
+    no_peak_requested = pyqtSignal()  # by the RT window's menu
+
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName("ChromatogramWindow")
         # self.setLabel("left", "Intensity")
+        self.peak_areas: list[tuple[float, float]] = []  # (start, end) in RT, of the peaks found
+        self.peak_area_items: list[pg.PlotDataItem] = []
+        # the RT window's menu, while it is a target's peak in the file (set_rt_window_menu_enabled)
+        self.rt_window_menu = QMenu(self)
+        self.no_peak_action = self.rt_window_menu.addAction("No peak in this file")
+        self.no_peak_action.triggered.connect(self.no_peak_requested.emit)
+        self.rt_window_menu_enabled = False
+        self.region0.menu_requested.connect(self._show_rt_window_menu)
+
+    def set_rt_window_menu_enabled(self, enabled: bool):
+        self.rt_window_menu_enabled = enabled
+
+    def _show_rt_window_menu(self, screen_pos):
+        if self.rt_window_menu_enabled:
+            self.rt_window_menu.popup(screen_pos.toPoint())
+
+    def set_primary_plot_data(self, x, y, **kwargs):
+        super().set_primary_plot_data(x, y, **kwargs)
+        self._draw_peak_areas()
+
+    def set_peak_areas(self, peak_areas: Sequence[tuple[float, float]]):
+        """Shade the area of each peak (start, end) under the trace, as it is integrated: over the points measured
+        from its start to its end, down to 0."""
+        self.peak_areas = list(peak_areas)
+        self._draw_peak_areas()
+
+    def _draw_peak_areas(self):
+        for item in self.peak_area_items:
+            self.removeItem(item)
+        self.peak_area_items = []
+        x, y = self.plot_items[0].xData, self.plot_items[0].yData
+        if x is None:
+            return
+        measured = np.isfinite(y)  # points not measured are NaN
+        for start, end in self.peak_areas:
+            inside = measured & (start <= x) & (x <= end)
+            if np.count_nonzero(inside) < 2:
+                continue
+            item = pg.PlotDataItem(x[inside], y[inside], pen=None, fillLevel=0, fillBrush=pg.mkBrush(PEAK_AREA_COLOR))
+            item.setZValue(1)  # over the RT window, under the trace
+            self.addItem(item)
+            self.peak_area_items.append(item)
 
 
 class SpectrumWindow(MyPlotWidget):
@@ -306,6 +494,20 @@ class SpectrumWindow(MyPlotWidget):
         super().__init__(parent=parent)
         self.setObjectName("SpectrumWindow")
         # self.setLabel("left", "Intensity")
+        # the m/z of the peak tops, clear of the plot's labels other than the cursor's, which moves with the mouse
+        self.peak_labels = PeakLabelItem(self.vb(), obstacles=(self.exp_label, self.top_right_label, self.warning_label))
+
+    def set_primary_plot_data(self, x, y, **kwargs):
+        super().set_primary_plot_data(x, y, **kwargs)
+        self.peak_labels.set_spectrum(x, y)
+
+    def _show_warning(self):
+        super()._show_warning()
+        self.peak_labels.invalidate()
+
+    def set_top_right_label_html(self, text: str):
+        super().set_top_right_label_html(text)
+        self.peak_labels.invalidate()
 
 
 class ChromatogramSpectrumView(QWidget):
