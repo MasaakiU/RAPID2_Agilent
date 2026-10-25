@@ -10,21 +10,26 @@ average precision on the validation set).
 import argparse
 import json
 import math
+import os
 import platform
 import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
-import torch
-from torch.utils.data import DataLoader
+# of a numpy of MKL (Anaconda's), MKL on GNU OpenMP, as torch is: on Intel's, beside torch's libgomp, the batches came
+# from the workers six times slower. Before numpy is imported; nothing to a numpy of OpenBLAS or Accelerate
+os.environ.setdefault("MKL_THREADING_LAYER", "GNU")
 
-from data import SimulatedPeaks, validation_set
-from decode import decode, evaluate
-from losses import DEFAULT_WEIGHTS, losses
-from models import build
-from simulator import VERSION, Config
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+
+from data import SimulatedPeaks, validation_set  # noqa: E402
+from decode import decode, evaluate  # noqa: E402
+from losses import DEFAULT_WEIGHTS, losses  # noqa: E402
+from models import build  # noqa: E402
+from simulator import VERSION, Config  # noqa: E402
 
 DEFAULTS = {
     "model": "transformer",
