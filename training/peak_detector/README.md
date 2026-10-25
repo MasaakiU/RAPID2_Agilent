@@ -49,6 +49,12 @@ python train.py --resume runs/transformer/last.pt --out runs/transformer   # 続
 
 `metrics.jsonl` の `steps_per_s` が、ワーカーの数を増やしても伸びない場合は、GPU 側が律速になっている。ワーカーを増やすと伸びる場合は、データ作りが律速になっている。
 
+GPU マシン（RTX 5090、Threadripper PRO 7955WX 16 コア）で測った値：1 ワーカーあたり毎秒約 300 件。`transformer` は `workers=12` で GPU 律速の毎秒 49 ステップ（4 で 19、8 で 34）。2 台の GPU で同時に学習すると、CPU を分け合って、`workers=14` ずつでそれぞれ毎秒約 39 ステップ。`kensert` は GPU が速いので（GPU だけなら毎秒約 210 ステップ）、データ作りが律速になる（`workers=14` で毎秒約 60）。
+
+numpy が MKL 版（Anaconda の numpy）だと、MKL が Intel の OpenMP を使い、torch の GNU OpenMP と同居して、ワーカーからのバッチの受け取りが 6 分の 1 の速さになる。`train.py` は、numpy を読む前に `MKL_THREADING_LAYER=GNU` を既定にしている（OpenBLAS や Accelerate の numpy には効かない・害もない）。
+
+ワーカーの数が違うと、学習データの流れ（どのサンプルがどの順で来るか）も変わる。同じ `seed` と同じ `workers` なら、同じ流れになる。モデルを比べるときは `workers` もそろえる。
+
 ## 実データでの評価
 
 `tools/peak_labeling` で正解を付けたデータセット（`xics.npz` と `xics.labels.json`）を使う。トレースを 0.5 秒ごとに補間し、確定済みで使えるトレースだけを評価する。
