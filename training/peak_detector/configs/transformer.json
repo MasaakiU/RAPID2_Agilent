@@ -1,0 +1,9 @@
+{
+ "model": "transformer",
+ "model_options": {"width": 64, "middle": 96, "d_model": 128, "layers": 4, "heads": 4, "feedforward": 512,
+                   "dropout": 0.1, "denoise": true},
+ "length": 2048,
+ "batch": 64,
+ "steps": 200000,
+ "lr": 0.0003
+}

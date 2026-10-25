@@ -1,0 +1,8 @@
+{
+ "model": "kensert",
+ "model_options": {"filters": [64, 128, 128, 256, 256], "kernel": 9},
+ "length": 2048,
+ "batch": 64,
+ "steps": 200000,
+ "lr": 0.001
+}
