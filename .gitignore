@@ -20,6 +20,7 @@ src/RAPID2_Agilent/io/_native/**/*.html
 
 # reports written by tests/check_mz_grid_consistency.py
 tests/mz_grid_*.json
+data/
 
 # automatic peak detection (peakonly, Kensert et al.): on this machine only, not committed for now
 src/RAPID2_Agilent/resources/model/

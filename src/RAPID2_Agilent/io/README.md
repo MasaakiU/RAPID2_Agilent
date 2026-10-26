@@ -36,6 +36,17 @@ retaining a shared array. Reloading creates a new `MSCalibInfo` with `poly=None`
 The Python reference calibration and scalar XIC boundary search remain usable
 without creating the full correction array.
 
+Older acquisitions (e.g. of 2022) differ in three ways. Their MSScan.xsd is older:
+one SpectrumParamValues (profile only), and no MzOfInterest and MzIsolationWidth,
+which are then 0. Their calibration polynomials go up to t^11; orders above 7 are
+evaluated with NumPy instead of the native `calculate_poly`. Their MSProfile.bin
+records are LZF compressed, to start_t, delta_t and an int32 intensity per data
+point. A record is taken as LZF when its header is not that of the token format
+(`\x90` and its point count). At load, `MSProfile.rewrite_lzf_records` writes such
+records again in memory in the token format (`_native/lzf_profile`), so all
+decoders read them unchanged. A 15 min run takes about 1 s and 100 MB, 0.6 of the
+LZF bytes.
+
 `run_hashes` gives the two SHA-256 of a run that the .rpd.csv export writes:
 `scan_sha256` of `AcqData/MSScan.bin`, quick, to look for a run by, and
 `data_sha256` of its data files, to tell it is the very run

@@ -15,6 +15,7 @@ from ._native.calibrate_mz import calculate_poly, calibrate_mz
 from ._native.build_checkpoints import build_checkpoints
 from ._native.average_spectrum import accumulate_decoded_calibrated_nearest_bins, accumulate_nearest_bins
 from ._native.mz_rt_binning import max_into_bins
+from ._native.lzf_profile import rewrite_lzf_records
 
 
 class AgilentReader:
@@ -88,6 +89,11 @@ class AgilentReader:
         self.ms_profile = MSProfile(
             bin_path=self.AcqData_path / "MSProfile.bin",
         )
+        # LZF records of older acquisitions (e.g. of 2022) are read from memory, written again as the newer ones are:
+        # the offsets and byte counts are then of them there
+        spectra = [scan["SpectrumParamValues"][self.spectrum_param_index] for scan in self.ms_scan_info.scan_info]
+        for spectrum, (offset, byte_count) in zip(spectra, self.ms_profile.rewrite_lzf_records(spectra)):
+            spectrum["SpectrumOffset"], spectrum["ByteCount"] = offset, byte_count
         self.ms_profile.set_checkpoints(
             [self.ms_scan_info.get_spectrum_info(i, self.spectrum_param_index, "SpectrumOffset") for i in range(self.N_scans)],
             [self.ms_scan_info.get_spectrum_info(i, self.spectrum_param_index, "ByteCount") for i in range(self.N_scans)]
@@ -120,9 +126,10 @@ class AgilentReader:
             {0: 1, 1: -1}.get(self.ms_scan_info.get_scan_info(i, "IonPolarity"), 0)
             for i in range(self.N_scans)
         ])
-        # which MS2 scans to use is chosen by these
+        # which MS2 scans to use is chosen by these; the older MSScan.xsd (e.g. of 2022) has no MzOfInterest and
+        # MzIsolationWidth, 0 then
         self.precursor_mz_list, self.isolation_width_list, self.collision_energy_list = (
-            np.array([self.ms_scan_info.get_scan_info(i, field) for i in range(self.N_scans)], dtype=np.float64)
+            np.array([self.ms_scan_info.scan_info[i].get(field, 0.0) for i in range(self.N_scans)], dtype=np.float64)
             for field in ("MzOfInterest", "MzIsolationWidth", "CollisionEnergy")
         )
 
@@ -457,8 +464,9 @@ class MSScanInfo():
             fixed_header = struct.unpack("<22i", f.read(88))
             assert fixed_header[0] == 257, fixed_header[0]  # 257, unknown
             assert all(x == 0 for x in fixed_header[1:17])  # 16 fields of ScanRecordType from CalibrationID to NumOfActualsPerScan?
-            assert fixed_header[17] == 2, fixed_header[17]  # ScanRecordType/DataDependentScanParamType?
-            assert fixed_header[18] == 6, fixed_header[18]  # ScanRecordType/SpectrumParamValues?
+            # ScanRecordType/DataDependentScanParamType? and ScanRecordType/SpectrumParamValues?: 2 and 6, or 1 and 4 in
+            # older files (e.g. of 2022, of the older MSScan.xsd)
+            assert tuple(fixed_header[17:19]) in ((2, 6), (1, 4)), fixed_header[17:19]
             self.N_repeat_dict["SpectrumParamValues"] = fixed_header[19]
             assert fixed_header[20] == 2, fixed_header[20]  # ScanRecordType/DataDependentScanParamType?
             assert fixed_header[21] == 0, fixed_header[21]  # repeat count of DataDependentScanParamType?
@@ -466,6 +474,8 @@ class MSScanInfo():
             f.seek(struct.unpack("<i", f.read(4))[0])
             for _ in range(N_scans):
                 self.scan_info.append(self.parse_complextype(f, complextypes_dict, "ScanRecordType"))
+            # the records as MSScan.xsd has them fill the file to its end
+            assert f.tell() == bin_path.stat().st_size, (f.tell(), bin_path.stat().st_size)
     def parse_complextype(self, f: BinaryIO, complextypes_dict: Dict[str, list], name: str) -> Dict[str, Any]:
         name = name.split(":", 1)[-1]  # remove namespace if exists
         out: Dict[str, Any] = {}
@@ -552,12 +562,19 @@ class MSCalibInfo():
         """Build lazily; retain one array only when all scan conditions match."""
         if self.poly is not None:
             return self.poly
-        left, right, a2, b2, c2, d2, e2, f2 = self.calib_info[scan_index][2:]
-        poly = calculate_poly(
-            left, right, a2, b2, c2, d2, e2, f2,
-            self.default_calib_info[calib_id]["polynomial_flag"],
-            N_datapoints, start_t, delta_t,
-        )
+        polynomial_flag = self.default_calib_info[calib_id]["polynomial_flag"]
+        if len(polynomial_flag) > 8:
+            # orders above 7 (older files, e.g. of 2022, have up to 11), which the native one has no room for
+            _, _, left, right, poly_coeffs = self._calibration_terms(scan_index, calib_id)
+            t_list = start_t + delta_t * np.arange(N_datapoints, dtype=np.float64)
+            poly = np.polynomial.polynomial.polyval(np.clip(t_list, left, right), poly_coeffs)
+        else:
+            left, right, a2, b2, c2, d2, e2, f2 = self.calib_info[scan_index][2:]
+            poly = calculate_poly(
+                left, right, a2, b2, c2, d2, e2, f2,
+                polynomial_flag,
+                N_datapoints, start_t, delta_t,
+            )
         poly.setflags(write=False)
         if self._can_share_poly:
             self.poly = poly
@@ -570,9 +587,9 @@ class MSCalibInfo():
         # t_list: linspaceより arange の方が軽いが、誤差が大きくなってしまう。
         # t_list = start_t + delta_t * np.arange(N_datapoints, dtype=np.float64)
         t_list = np.linspace(start_t, start_t + delta_t * (N_datapoints - 1), N_datapoints)
-        # poly_coeffs[j] が t^j の係数（最大 7次まで）
+        # poly_coeffs[j] が t^j の係数（最大 7次まで、古いファイルでは 11次まで）
         coefficients = (a2, b2, c2, d2, e2, f2)
-        poly_coeffs = np.zeros(8, dtype=np.float64)
+        poly_coeffs = np.zeros(max(8, len(poly_flag)), dtype=np.float64)
         coeff_idx = 0
         for j, F in enumerate(poly_flag):
             if F and coeff_idx < len(coefficients):
@@ -581,8 +598,8 @@ class MSCalibInfo():
         t_list_clipped = np.clip(t_list, left, right)
         # Horner法で効率的に多項式計算する: 
         # poly = (((((c7*t) + c6)*t + c5)*t + c4)*t + ... + c0)
-        poly = np.full_like(t_list_clipped, poly_coeffs[7])
-        for k in range(6, -1, -1):
+        poly = np.full_like(t_list_clipped, poly_coeffs[-1])
+        for k in range(len(poly_coeffs) - 2, -1, -1):
             poly = poly * t_list_clipped + poly_coeffs[k]
         return (coeff * (t_list - base))**2 - poly
     def calibrate_mz(self, scan_index: int, N_datapoints: int, calib_id: int, start_t: float, delta_t: float):
@@ -621,11 +638,12 @@ class MSCalibInfo():
         return low_idx - 1
 
     def _calibration_terms(self, scan_index: int, calib_id: int):
-        """coeff, base, the clipping limits and the 8 polynomial coefficients (lowest order first) of a scan."""
+        """coeff, base, the clipping limits and the polynomial coefficients (lowest order first; 8, or of the orders the
+        flags have) of a scan."""
         coeff, base, left, right, a2, b2, c2, d2, e2, f2 = self.calib_info[scan_index]
         poly_flag = self.default_calib_info[calib_id]["polynomial_flag"]
         coefficients = (a2, b2, c2, d2, e2, f2)
-        poly_coeffs = [0.0] * 8
+        poly_coeffs = [0.0] * max(8, len(poly_flag))
         coeff_idx = 0
         for polynomial_order, flag in enumerate(poly_flag):
             if flag and coeff_idx < len(coefficients):
@@ -648,8 +666,8 @@ class MSCalibInfo():
         def mz_at(datapoint_index: int) -> float:
             t_value = start_t + delta_t * datapoint_index
             t_clipped = min(max(t_value, left), right)
-            polynomial_correction = poly_coeffs[7]
-            for polynomial_order in range(6, -1, -1):
+            polynomial_correction = poly_coeffs[-1]
+            for polynomial_order in range(len(poly_coeffs) - 2, -1, -1):
                 polynomial_correction = polynomial_correction * t_clipped + poly_coeffs[polynomial_order]
             primary_term = coeff * (t_value - base)
             return primary_term * primary_term - polynomial_correction
@@ -705,7 +723,33 @@ class MSProfile():
         self._fh = open(bin_path, "rb")
         self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
         self._mm_view = memoryview(self._mm)
+        self._buffer: np.ndarray | None = None  # the records written again in memory, of a file of LZF ones
         self.check_points_list: List[CheckPoints] = []
+    def is_lzf(self, offset: int, compressed_len: int, N_datapoints: int) -> bool:
+        """Whether a record is LZF compressed, not of the header decode_header reads (\\x90 and its datapoint count)."""
+        return compressed_len < 24 or struct.unpack_from("<I", self._mm_view, offset + 16)[0] != (144 << 24 | N_datapoints)
+    def rewrite_lzf_records(self, spectra: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
+        """
+        The offsets and byte counts of the records of the spectra (SpectrumParamValues) to read them by.
+        Those of older acquisitions (e.g. of 2022) are LZF compressed, to UncompressedByteCount bytes of start_t,
+        delta_t and an int32 intensity a datapoint. If any is, all are written again into memory, the LZF ones as
+        the others are (about 0.6 of their bytes), and the profile is read from there instead of the file.
+        """
+        records = [(spectrum["SpectrumOffset"], spectrum["ByteCount"]) for spectrum in spectra]
+        lzf = [self.is_lzf(offset, byte_count, spectrum["PointCount"]) for (offset, byte_count), spectrum in zip(records, spectra)]
+        if not any(lzf):
+            return records
+        buffer, offset_list, byte_count_list = rewrite_lzf_records(
+            self._mm_view,
+            [offset for offset, _ in records],
+            [byte_count for _, byte_count in records],
+            [spectrum.get("UncompressedByteCount", 0) for spectrum in spectra],
+            lzf,
+        )
+        self.close()
+        self._buffer = buffer
+        self._mm_view = memoryview(buffer)
+        return list(zip(offset_list.tolist(), byte_count_list.tolist()))
     def set_checkpoints(self, offset_list: List[int], compressed_len_list: List[int]):
         for i, (offset, compressed_len) in enumerate(zip(offset_list, compressed_len_list)):
             self.check_points_list.append(self.build_checkpoints(offset, compressed_len, stride_bytes=2048))
@@ -918,6 +962,7 @@ class MSProfile():
             self._fh.close()
         except Exception:
             pass
+        self._buffer = None
     def __enter__(self):
         return self
     def __exit__(self, *exc):
