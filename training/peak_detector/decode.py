@@ -1,4 +1,4 @@
-"""From the detector's heads to apexes, and apexes against the peaks labeled (SPEC.md 6.2). numpy only.
+"""From the detector's heads to apexes (SPEC.md 5), and apexes against the peaks labeled (SPEC.md 6.2). numpy only.
 
 An apex found matches the unmatched positive nearest it within max(2 points, 0.5 FWHM), the most confident first.
 One within that of a peak not scored counts for nothing; one of no peak (a negative included) is a false positive.
@@ -10,12 +10,17 @@ from targets import positions_of
 
 TOLERANCE = (2.0, 0.5)  # points, part of the FWHM
 THRESHOLDS = (0.3, 0.5, 0.7, 0.9)
+# of a likelier apex's widths to 5 % (about 1 FWHM each), where another is of its peak: the heat about an apex is a
+# Gaussian of 0.1 FWHM (targets.py), in which the noise on a broad peak's top makes several maxima. Of 0.1, v3's models
+# found a third fewer false tops on the real data, and 0.3 to 0.5 % fewer overlapped peaks on the synthetic
+MERGE = 0.1
 
 
 def decode(heat: np.ndarray, offset: np.ndarray, log_widths: np.ndarray, stride: int, *, threshold: float = 0.05,
            length: int | None = None) -> list[dict]:
     """The apexes of one sample's heads (heat as probabilities): the cells at local maxima of the heat above
-    threshold, each {"apex", "confidence", "left", "right"}, in points; those past length left out."""
+    threshold, each {"apex", "confidence", "left", "right"}, in points; those past length left out, and those within
+    MERGE of the widths of a likelier one."""
     heat = np.asarray(heat, dtype=np.float64)
     padded = np.concatenate([[-1.0], heat, [-1.0]])
     tops = np.flatnonzero((heat > threshold) & (heat >= padded[:-2]) & (heat > padded[2:]))
@@ -26,7 +31,11 @@ def decode(heat: np.ndarray, offset: np.ndarray, log_widths: np.ndarray, stride:
             continue
         found.append({"apex": float(apex), "confidence": float(heat[top]),
                       "left": float(np.exp(log_widths[0, top])), "right": float(np.exp(log_widths[1, top]))})
-    return found
+    kept = []
+    for apex in sorted(found, key=lambda a: -a["confidence"]):
+        if all(not (k["apex"] - MERGE * k["left"] <= apex["apex"] <= k["apex"] + MERGE * k["right"]) for k in kept):
+            kept.append(apex)
+    return sorted(kept, key=lambda a: a["apex"])
 
 
 def match(found: list[dict], peaks, tolerance=TOLERANCE) -> tuple[list[tuple[float, bool]], list]:

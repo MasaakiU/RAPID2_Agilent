@@ -11,7 +11,7 @@ from scipy.special import erfcx
 
 SHAPES = ("gauss", "emg", "bigauss", "voigt", "unimodal")
 # of the samples and their labels, as SPEC.md's: one more at each change of them, which every run records
-VERSION = 3
+VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,10 @@ class Config:
     coarse: float = 0.3
     coarse_factor: tuple[float, float] = (2.0, 8.0)
     coarse_width: tuple[float, float] = (2.0, 8.0)
+    # of the samples not coarse, those of broad peaks (broad_width, the sample's width): v3's models, of few samples
+    # of peaks over 200 points, found several tops on them, as on real ones of up to 280 (data/peak_eval: POPA, 138 s)
+    broad: float = 0.2
+    broad_width: tuple[float, float] = (120.0, 280.0)
 
 
 @dataclass
@@ -73,7 +77,8 @@ def simulate(rng: np.random.Generator, config: Config = Config()) -> Sample:
         width = _log_uniform(rng, *config.coarse_width)  # the sample's, in points of the grid
     else:
         grid_length = length
-        width = _log_uniform(rng, config.fwhm[0] * 1.25, config.fwhm[1] / 1.5)
+        width = (_log_uniform(rng, *config.broad_width) if rng.random() < config.broad
+                 else _log_uniform(rng, config.fwhm[0] * 1.25, config.fwhm[1] / 1.5))
     # W_min in points of the grid, W_max in those of the sample
     fwhm_range = (config.fwhm[0], config.fwhm[1] / factor)
     sample = _simulate_grid(rng, config, grid_length, width, fwhm_range)

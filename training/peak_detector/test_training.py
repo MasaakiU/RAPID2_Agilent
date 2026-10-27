@@ -33,6 +33,13 @@ def test_an_apex_comes_back_from_its_targets(stride):
     assert (found["left"], found["right"]) == pytest.approx((8.0, 12.0))
 
 
+def test_maxima_within_a_tenth_of_a_likelier_ones_widths_are_of_its_peak():
+    heat = np.zeros(300)
+    heat[[100, 104, 150]] = [0.9, 0.6, 0.7]  # widths of 50: 104 within 5 of 100, 150 not
+    found = decode(heat, np.full(300, 0.5), np.log(np.full((2, 300), 50.0)), 1)
+    assert [(apex["apex"], apex["confidence"]) for apex in found] == [(100.0, 0.9), (150.0, 0.7)]
+
+
 def test_peaks_not_scored_and_the_padding_weigh_nothing():
     valid = np.ones(512, dtype=bool)
     valid[400:] = False
