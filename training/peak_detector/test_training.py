@@ -125,19 +125,38 @@ def test_training_checking_exporting_and_real_data_run_through(tmp_path):
     with np.load(tmp_path / "model.npz") as arrays:
         exported = json.loads(str(arrays["config"]))
         assert exported["model"] == "transformer" and exported["provenance"] == made
-    # a labeled dataset as tools/peak_labeling writes it: one trace, two peaks, done
+    # a labeled dataset as tools/peak_labeling writes it: one trace, two peaks and a top unsure, done
     rt = np.linspace(0, 5, 300)
     intensity = 1000 * np.exp(-((rt - 2) / 0.05) ** 2 / 2) + 500 * np.exp(-((rt - 3.5) / 0.05) ** 2 / 2) + 10
     meta = [{"id": "0000", "run": "/x.d", "kind": "target", "name": "x", "mz_window": None, "polarity": 1,
              "ms_level": 1, "start": 0, "end": 300}]
     np.savez(tmp_path / "xics.npz", meta=json.dumps(meta), rt=rt, intensity=intensity)
-    labels = {"traces": {"0000": {"candidates": [{"rt": 2.0, "source": "kensert", "confidence": 1.0, "state": "taken"}],
-                                  "added": [3.5], "done": True, "unusable": False, "note": ""}}}
+    labels = {"traces": {"0000": {"candidates": [{"rt": 2.0, "source": "kensert", "confidence": 1.0, "state": "taken"},
+                                                 {"rt": 4.2, "source": "scipy", "confidence": None, "state": "unsure"}],
+                                  "added": [3.5], "added_unsure": [], "done": True, "unusable": False, "note": ""}}}
     (tmp_path / "xics.labels.json").write_text(json.dumps(labels))
     assert evaluate_real.main(["--checkpoint", str(tmp_path / "run" / "last.pt"), "--dataset",
                                str(tmp_path / "xics.npz"), "--device", "cpu", "--out", str(tmp_path / "real.json")]) == 0
     summary = json.loads((tmp_path / "real.json").read_text())
     assert summary["all"]["traces_peaks"] == 2
+
+
+def test_a_real_peak_is_matched_within_half_its_width_measured():
+    import evaluate_real
+
+    rt = np.arange(0, 10, 1 / 60)  # a scan a second
+    sigma = 0.15  # min: FWHM 0.353
+    rng = np.random.default_rng(0)
+    # a broad peak, its top noisy, beside a narrow one of its own
+    intensity = (1000 * np.exp(-((rt - 4) / sigma) ** 2 / 2) * (1 + 0.05 * rng.standard_normal(len(rt)))
+                 + 800 * np.exp(-((rt - 4.9) / 0.03) ** 2 / 2) + 10)
+    broad, narrow = evaluate_real.half_widths(rt, intensity, [4.02, 4.9])
+    assert broad == pytest.approx(2.3548 * sigma, rel=0.1)
+    assert narrow == pytest.approx(2.3548 * 0.03, rel=0.2)
+    peaks = [SimpleNamespace(apex=4.02 * 120, fwhm=broad * 120, label="positive")]  # in points of 0.5 s
+    # 6 s off the label: within half the broad peak's width, not within 3 s
+    assert match([{"apex": 4.12 * 120, "confidence": 0.9}], peaks, tolerance=(6, 0.5))[0] == [(0.9, True)]
+    assert match([{"apex": 4.12 * 120, "confidence": 0.9}], peaks, tolerance=(6, 0.0))[0] == [(0.9, False)]
 
 
 def test_the_validation_set_is_the_same_each_time():

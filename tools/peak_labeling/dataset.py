@@ -2,7 +2,8 @@
 offered there. A tool apart from the app: it uses RAPID2_Agilent, and the app nothing of it.
 
 A dataset is one .npz: "meta", a JSON list of the traces (id, run, kind, name, m/z window, polarity, MS level, and
-start and end, their points in "rt" and "intensity", which hold all the traces one after another).
+start and end, their points in "rt" and "intensity", which hold all the traces one after another); and "runs", a JSON
+object of what was done to each run read, by its path (the scans whose calibration was repaired).
 """
 
 import json
@@ -36,7 +37,7 @@ class Trace:
     intensity: np.ndarray
 
 
-def write_dataset(path: str | Path, traces: list[Trace]) -> None:
+def write_dataset(path: str | Path, traces: list[Trace], runs: dict | None = None) -> None:
     meta, start = [], 0
     for trace in traces:
         record = {key: value for key, value in asdict(trace).items() if key not in ("rt", "intensity")}
@@ -45,6 +46,7 @@ def write_dataset(path: str | Path, traces: list[Trace]) -> None:
     np.savez_compressed(
         path,
         meta=json.dumps(meta),
+        runs=json.dumps(runs or {}),
         rt=np.concatenate([trace.rt for trace in traces]) if traces else np.array([]),
         intensity=np.concatenate([trace.intensity for trace in traces]) if traces else np.array([]),
     )
@@ -80,15 +82,21 @@ def candidate_tops(rt: np.ndarray, intensity: np.ndarray) -> list[dict]:
     )
     apexes = rt[0] + places * frame
     window = frame / kensert_cnn.NUM_WINDOWS
-    # of tops nearer than one of the CNN's windows, the likelier, as kensert_peaks keeps them
-    kept = []
+    step = float(np.median(np.diff(rt)))
+    # of tops nearer than one of the CNN's windows, the likelier, as kensert_peaks keeps them; each moved to the highest
+    # scan within SAME_TOP_SCANS, as the CNN's place is of its own grid, not of the trace's top
+    kept, tops = [], []
     for i in np.argsort(-probabilities):
         if apexes[i] <= rt[-1] and all(abs(apexes[i] - apexes[j]) >= window for j in kept):
-            kept.append(i)
-    candidates = [{"rt": float(apexes[i]), "source": "kensert", "confidence": float(probabilities[i])} for i in kept]
+            nearest = int(np.argmin(np.abs(rt - apexes[i])))
+            near = np.arange(max(nearest - SAME_TOP_SCANS, 0), min(nearest + SAME_TOP_SCANS + 1, len(rt)))
+            top = float(rt[near[np.argmax(intensity[near])]])
+            if all(abs(top - other) > SAME_TOP_SCANS * step for other in tops):
+                kept.append(i)
+                tops.append(top)
+    candidates = [{"rt": top, "source": "kensert", "confidence": float(probabilities[i])} for i, top in zip(kept, tops)]
     from scipy.signal import peak_prominences
 
-    step = float(np.median(np.diff(rt)))
     noise = _noise(intensity)
     for peak in peak_detection.scipy_peaks(rt, intensity):
         top = int(np.argmin(np.abs(rt - peak.apex)))

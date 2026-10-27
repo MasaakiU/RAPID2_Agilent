@@ -2,7 +2,10 @@
 of each run's m/z-RT map, and of m/z at random, each over the whole run.
 
     python tools/peak_labeling/extract_xics.py RUN.d [RUN.d ...] --out xics.npz [--targets targets.rpd.csv]
-        [--spots 15] [--random 5] [--ppm 10] [--seed 0]
+        [--spots 15] [--random 5] [--ppm 10] [--seed 0] [--keep-calibration]
+
+Scans whose mass calibration jumps away from that of the scans about them are put back in line first
+(calibration.py), unless --keep-calibration; those of each run are in the dataset's "runs".
 """
 
 import argparse
@@ -12,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from calibration import repair_calibration_jumps  # noqa: E402
 from dataset import Trace, write_dataset  # noqa: E402
 
 from RAPID2_Agilent.models.chemistry import parse_adduct  # noqa: E402
@@ -31,25 +35,32 @@ def main(argv=None) -> int:
     parser.add_argument("--random", type=int, default=5, help="m/z at random in each run")
     parser.add_argument("--ppm", type=float, default=10.0, help="half the m/z window of a spot's or a random XIC")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--keep-calibration", action="store_true",
+                        help="each scan's calibration as stored, those jumping away from the others' too")
     args = parser.parse_args(argv)
 
     targets = []
     if args.targets:
         targets = rpd_csv.resolve_groups(rpd_csv.read_targets_file(args.targets))
     rng = np.random.default_rng(args.seed)
-    runs, traces = RunCache(max_runs=1), []
+    runs, traces, done = RunCache(max_runs=1), [], {}
     try:
         for run in args.runs:
             data = runs.get(run)
             run_name = Path(run).name
             print(f"{run_name}: ", end="", flush=True)
+            key = str(Path(run).resolve())
+            repaired = [] if args.keep_calibration or key in done else repair_calibration_jumps(data)
+            done.setdefault(key, {"calibration_repaired": repaired})
+            if repaired:
+                print(f"calibration of {len(repaired)} scans repaired, ", end="", flush=True)
             for target in targets:
                 rt, intensity = target_trace(data, target)
                 window = target.mz_window() if target.trace_type is TraceType.XIC else None
                 polarity = 1 if parse_adduct(target.adduct).charge > 0 else -1
                 _add(traces, run, "target", f"#{target.index} {target.name}", window, polarity, target.ms_level.number,
                      rt, intensity)
-            for spot in maps.strongest_spots(maps.built_map(data), top_n=args.spots):
+            for spot in maps.strongest_spots(maps.built_map(data), top_n=args.spots) if args.spots else []:
                 polarity = int(data.polarity_list[spot.scan])
                 window = _ppm_window(spot.mz, args.ppm)
                 _add(traces, run, "spot", f"m/z {spot.mz:.4f} (spot at {spot.rt:.2f} min)", window, polarity, MS1,
@@ -65,7 +76,7 @@ def main(argv=None) -> int:
             print(f"{sum(trace.run == str(Path(run).resolve()) for trace in traces)} traces")
     finally:
         runs.close()
-    write_dataset(args.out, traces)
+    write_dataset(args.out, traces, done)
     print(f"{len(traces)} traces written to {args.out}")
     return 0
 
