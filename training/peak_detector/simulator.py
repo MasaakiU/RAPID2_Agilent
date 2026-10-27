@@ -11,7 +11,7 @@ from scipy.special import erfcx
 
 SHAPES = ("gauss", "emg", "bigauss", "voigt", "unimodal")
 # of the samples and their labels, as SPEC.md's: one more at each change of them, which every run records
-VERSION = 2
+VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -97,6 +97,10 @@ def _simulate_grid(rng, config, length, width, fwhm_range) -> Sample:
     twin = _noisy(rng, clean, saturation)[0] if rng.random() < config.twin else None
     missing = _missing(rng, length)
     peaks = _labels(config, x, components, signal - clean, missing, saturation, length)
+    if "floor" in noise_kinds:
+        # the signal without the noise cut at 0 as the signal is, as nothing tells how far below 0 a baseline is where
+        # the signal is 0 (the labels of the noise as it was added)
+        clean = np.maximum(clean, 0.0)
     # the points not measured: across them, as the scans not measured are left out and the rest interpolated
     signal, twin = _across(signal, missing), None if twin is None else _across(twin, missing)
     return Sample(signal.astype(np.float32), clean.astype(np.float32), missing, peaks,
@@ -306,7 +310,9 @@ def _noisy(rng, clean, saturation) -> tuple[np.ndarray, list[str]]:
         noise += rng.normal(0, 1, length) * np.sqrt(_log_uniform(rng, 0.01, 10) * level)
         kinds.append("shot")
     if rng.random() < 0.3:
-        noise += rng.normal(0, 1, length) * rng.uniform(0.01, 0.1) * level
+        # up to 30 %, as on the tops of real broad peaks (data/peak_eval: 8 to 28 %), on which v2's models, of up to
+        # 10 %, found several tops
+        noise += rng.normal(0, 1, length) * _log_uniform(rng, 0.01, 0.3) * level
         kinds.append("multiplicative")
     if saturation is not None:
         # little noise where the detector is saturated

@@ -41,7 +41,7 @@ python train.py --resume runs/transformer/last.pt --out runs/transformer   # 続
   - `config.json`
   - `metrics.jsonl`：`log_every` ごとの損失と速さ、`eval_every` ごとの検証の結果（AP、しきい値ごとの適合率・再現率・F1、内訳ごとの再現率）
   - `last.pt`、`best.pt`（検証の AP が一番良かったもの）
-- 検証用データは固定の乱数で作る（`validation` 件）。学習のデータとは乱数の系列が別。
+- 検証用データは固定の乱数で作る（`validation` 件、既定 5000。1000 件では 1 回の AP が ±0.002 ほどぶれ、モデル同士の差と同じくらいになる）。学習のデータとは乱数の系列が別。
 
 ### データ作りの速さ
 
@@ -57,12 +57,18 @@ numpy が MKL 版（Anaconda の numpy）だと、MKL が Intel の OpenMP を�
 
 ## 実データでの評価
 
-`tools/peak_labeling` で正解を付けたデータセット（`xics.npz` と `xics.labels.json`）を使う。トレースを 0.5 秒ごとに補間し、確定済みで使えるトレースだけを評価する。
+`tools/peak_labeling` で正解を付けたデータセット（`xics.npz` と `xics.labels.json`）を使う。トレースを 0.5 秒ごとに補間し、確定済みで使えるトレースだけを評価する。データセットは複数渡せて、全体、種類ごと、データセットごとに集計する。
 
 ```sh
-python evaluate_real.py --checkpoint runs/transformer/best.pt --dataset xics.npz --out real.json \
-    [--step-seconds 0.5] [--tolerance-seconds 3]
+python evaluate_real.py --checkpoint runs/transformer/best.pt --dataset a.npz b.npz ... --out real.json \
+    [--details found.json] [--step-seconds 0.5] [--tolerance-seconds 3] [--tolerance-fwhm 0.5]
+python evaluate_real.py --app kensert --dataset a.npz b.npz ...   # アプリの検出器（kensert、peakonly、scipy）と比べる
 ```
+
+- 正解は、採用した頂点と足した頂点。保留の頂点は採点しない（そこで検出しても、しなくても数えない）。
+- 許容幅は、3 秒とピークの半値幅の半分の大きい方。
+- `--app` はアプリの `RAPID2_Agilent.services.peak_detection` を、測ったままのトレースにかける（`src` が import できること）。Kensert は確率を確信度にし、0.05 以上を見る（アプリは 0.5 超を取る）。peakonly と scipy は確信度が無いので、すべて 1。
+- `--details`：トレースごとに、正解の頂点（見つかった確信度、見つからなければ null）と、検出した頂点（true、false、保留に当たった ignored）を書き出す。
 
 ## 書き出し
 

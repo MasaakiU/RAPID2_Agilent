@@ -31,21 +31,30 @@ def decode(heat: np.ndarray, offset: np.ndarray, log_widths: np.ndarray, stride:
 
 def match(found: list[dict], peaks, tolerance=TOLERANCE) -> tuple[list[tuple[float, bool]], list]:
     """(confidence, true) of each apex found that counts, and the positives matched, by the rule above."""
+    assigned = assign(found, peaks, tolerance)
+    records = [(apex["confidence"], peak is not None) for apex, peak, counts in assigned if counts]
+    return records, [peak for _apex, peak, _counts in assigned if peak is not None]
+
+
+def assign(found: list[dict], peaks, tolerance=TOLERANCE) -> list[tuple[dict, object, bool]]:
+    """Each apex found, the most confident first, with the positive it matches (None if none) and whether it counts,
+    by the rule above. A positive is found at a threshold if the apex matching it is as confident."""
     positives = [peak for peak in peaks if peak.label == "positive"]
     unscored = [peak for peak in peaks if peak.label == "ignore"]
 
     def near(peak, apex):
         return abs(peak.apex - apex) <= max(tolerance[0], tolerance[1] * peak.fwhm)
 
-    matched, records = set(), []
+    matched, assigned = set(), []
     for apex in sorted(found, key=lambda a: -a["confidence"]):
         candidates = [i for i, peak in enumerate(positives) if i not in matched and near(peak, apex["apex"])]
         if candidates:
-            matched.add(min(candidates, key=lambda i: abs(positives[i].apex - apex["apex"])))
-            records.append((apex["confidence"], True))
-        elif not any(near(peak, apex["apex"]) for peak in unscored):
-            records.append((apex["confidence"], False))
-    return records, [positives[i] for i in matched]
+            nearest = min(candidates, key=lambda i: abs(positives[i].apex - apex["apex"]))
+            matched.add(nearest)
+            assigned.append((apex, positives[nearest], True))
+        else:
+            assigned.append((apex, None, not any(near(peak, apex["apex"]) for peak in unscored)))
+    return assigned
 
 
 def average_precision(records: list[tuple[float, bool]], positives: int) -> float:

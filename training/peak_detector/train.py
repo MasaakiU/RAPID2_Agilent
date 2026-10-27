@@ -43,7 +43,7 @@ DEFAULTS = {
     "grad_clip": 1.0,
     "loss_weights": DEFAULT_WEIGHTS,
     "workers": 8,
-    "validation": 1_000,  # samples
+    "validation": 5_000,  # samples: of 1000, the AP of one check is off by some 0.002, as much as models differ
     "eval_every": 5_000,
     "log_every": 100,
     "amp": "bf16",  # "bf16", "fp16" or "none"; on CUDA only

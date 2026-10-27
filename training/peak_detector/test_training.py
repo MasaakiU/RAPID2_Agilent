@@ -136,9 +136,13 @@ def test_training_checking_exporting_and_real_data_run_through(tmp_path):
                                   "added": [3.5], "added_unsure": [], "done": True, "unusable": False, "note": ""}}}
     (tmp_path / "xics.labels.json").write_text(json.dumps(labels))
     assert evaluate_real.main(["--checkpoint", str(tmp_path / "run" / "last.pt"), "--dataset",
-                               str(tmp_path / "xics.npz"), "--device", "cpu", "--out", str(tmp_path / "real.json")]) == 0
+                               str(tmp_path / "xics.npz"), "--device", "cpu", "--out", str(tmp_path / "real.json"),
+                               "--details", str(tmp_path / "found.json")]) == 0
     summary = json.loads((tmp_path / "real.json").read_text())
-    assert summary["all"]["traces_peaks"] == 2
+    assert summary["all"]["traces_peaks"] == 2 and summary["by_dataset"]["xics"]["traces"] == 1
+    (trace,) = json.loads((tmp_path / "found.json").read_text())
+    assert [(peak["rt"], peak["unsure"]) for peak in trace["peaks"]] == [(2.0, False), (3.5, False), (4.2, True)]
+    assert {apex["outcome"] for apex in trace["found"]} <= {"true", "false", "ignored"}
 
 
 def test_a_real_peak_is_matched_within_half_its_width_measured():

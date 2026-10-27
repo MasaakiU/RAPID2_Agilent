@@ -1,14 +1,21 @@
-"""Check a detector on real XICs labeled with tools/peak_labeling (its dataset .npz and .labels.json), each drawn at
-one step of RT as the app draws them, the traces done and of use only.
+"""Check a detector on real XICs labeled with tools/peak_labeling (datasets .npz and their .labels.json), each drawn
+at one step of RT as the app draws them, the traces done and of use only: a detector trained here, or one of the
+app's (RAPID2_Agilent's peak_detection, to compare with), on the traces as measured, as the app runs it.
 
-    python evaluate_real.py --checkpoint runs/transformer/best.pt --dataset xics.npz [--labels xics.labels.json]
-        [--step-seconds 0.5] [--tolerance-seconds 3] [--tolerance-fwhm 0.5] [--window 4096] [--out real.json]
+    python evaluate_real.py (--checkpoint runs/transformer/best.pt | --app kensert) --dataset xics.npz [more.npz ...]
+        [--labels xics.labels.json] [--step-seconds 0.5] [--tolerance-seconds 3] [--tolerance-fwhm 0.5]
+        [--window 4096] [--out real.json] [--details found.json]
 
 A trace's peaks are its tops taken and added; those unsure are not scored, as the simulator's "ignore"; the rest of
 it is of no peak. An apex found matches an unmatched peak within the tolerance, the most confident first; one that
 matches none, and is not within it of an unsure top, is a false positive. The tolerance of a peak is the larger of
 --tolerance-seconds and --tolerance-fwhm times its width at half height, as the simulated peaks' (decode.py): the top
 of a broad peak, its noise on it, is placed less closely, by a labeler as by a detector.
+
+The scores are of all the traces, of each kind and of each dataset (its file's name), at each of THRESHOLDS of the
+confidence. The app's Kensert CNN gives each top its probability, from KENSERT_FLOOR up (the app takes those over
+0.5); peakonly and scipy give none, each top 1. --details writes each trace's peaks, with the confidence they are
+found at (null if not found), and the apexes found, each "true", "false" or "ignored" (by an unsure top).
 """
 
 import argparse
@@ -19,16 +26,23 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from decode import THRESHOLDS, average_precision, decode, match
+from decode import assign, average_precision, decode
 from features import features
 from models import build
 
 OVERLAP = 512  # points of a window over the next, of a trace longer than one
+THRESHOLDS = (0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9)
+KENSERT_FLOOR = 0.05  # of the app's Kensert CNN's tops, the least probable looked at
+
+
+def labels_of(dataset: str) -> str:
+    """The labels of a dataset, as label_peaks.py keeps them: beside it."""
+    return str(Path(dataset).with_name(Path(dataset).name.removesuffix(".npz") + ".labels.json"))
 
 
 def read_labeled(dataset: str, labels: str) -> list[dict]:
-    """The traces done and of use: their RT (min), intensity, kind, name, and the RTs of their peaks and of their tops
-    unsure."""
+    """The traces done and of use: their run, RT (min), intensity, kind, name, and the RTs of their peaks and of their
+    tops unsure."""
     with np.load(dataset) as data:
         meta, rt, intensity = json.loads(str(data["meta"])), data["rt"], data["intensity"]
     traces = json.loads(Path(labels).read_text())["traces"]
@@ -39,7 +53,7 @@ def read_labeled(dataset: str, labels: str) -> list[dict]:
             continue
         tops = [c["rt"] for c in label["candidates"] if c["state"] == "taken"] + list(label["added"])
         unsure = [c["rt"] for c in label["candidates"] if c["state"] == "unsure"] + list(label.get("added_unsure", []))
-        labeled.append({"id": record["id"], "kind": record["kind"], "name": record["name"],
+        labeled.append({"id": record["id"], "run": record["run"], "kind": record["kind"], "name": record["name"],
                         "rt": rt[record["start"]:record["end"]], "intensity": intensity[record["start"]:record["end"]],
                         "peaks": sorted(tops), "unsure": sorted(unsure)})
     return labeled
@@ -114,53 +128,119 @@ def detect(model, values: np.ndarray, missing: np.ndarray, window: int, device) 
     return found
 
 
+def app_tops(name: str, rt: np.ndarray, intensity: np.ndarray) -> list[dict]:
+    """The tops one of the app's detectors finds in a trace as measured, {"rt", "confidence"} each. Kensert's as
+    peak_detection.kensert_peaks has them, of a probability of KENSERT_FLOOR or more, each with it: the likelier
+    first, so that those of a probability over a threshold are the app's at that threshold."""
+    from RAPID2_Agilent.services import kensert_cnn, peak_detection
+
+    if len(rt) < 3 or intensity.max() <= intensity.min():
+        return []
+    if name != "kensert":
+        detector = {"peakonly": peak_detection.peakonly_peaks, "scipy": peak_detection.scipy_peaks}[name]
+        return [{"rt": peak.apex, "confidence": 1.0} for peak in detector(rt, intensity)]
+    signal = intensity - np.percentile(intensity, peak_detection.BASELINE_PERCENTILE)
+    frame = max(peak_detection.FRAME_MINUTES, rt[-1] - rt[0])
+    x = rt[0] + frame * np.linspace(0, 1, kensert_cnn.INPUT_SIZE)
+    drawn_signal = np.interp(x, rt, signal)
+    probabilities, places, _areas = kensert_cnn.decode(
+        kensert_cnn.predict(drawn_signal[None] / drawn_signal[x <= rt[-1]].max())[0], KENSERT_FLOOR
+    )
+    apexes = rt[0] + places * frame
+    window = frame / kensert_cnn.NUM_WINDOWS
+    kept, tops = [], {}
+    for i in np.argsort(-probabilities):
+        if apexes[i] <= rt[-1] and all(abs(apexes[i] - apexes[j]) >= window for j in kept):
+            kept.append(i)
+            near = np.flatnonzero(np.abs(rt - apexes[i]) <= window / 2)
+            top = int(near[np.argmax(intensity[near])]) if len(near) else int(np.argmin(np.abs(rt - apexes[i])))
+            # as _peaks_at keeps them: of a top higher than beside it, once
+            if 0 < top < len(rt) - 1 and intensity[top] > max(intensity[top - 1], intensity[top + 1]):
+                tops.setdefault(top, float(probabilities[i]))
+    return [{"rt": float(rt[top]), "confidence": probability} for top, probability in tops.items()]
+
+
+def scores(records: list[tuple[float, bool]], positives: int, traces: int) -> dict:
+    """The average precision, and the precision, recall and false positives at each of THRESHOLDS."""
+    entry = {"traces": traces, "traces_peaks": positives, "ap": average_precision(records, positives)}
+    for threshold in THRESHOLDS:
+        true = sum(1 for confidence, is_true in records if confidence >= threshold and is_true)
+        false = sum(1 for confidence, is_true in records if confidence >= threshold and not is_true)
+        entry[f"precision@{threshold}"] = true / max(true + false, 1)
+        entry[f"recall@{threshold}"] = true / max(positives, 1)
+        entry[f"false@{threshold}"] = false
+    return entry
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--labels")
+    detector = parser.add_mutually_exclusive_group(required=True)
+    detector.add_argument("--checkpoint")
+    detector.add_argument("--app", choices=("kensert", "peakonly", "scipy"), help="one of the app's detectors")
+    parser.add_argument("--dataset", required=True, nargs="+")
+    parser.add_argument("--labels", help="of a single dataset: its labels, if not beside it")
     parser.add_argument("--step-seconds", type=float, default=0.5)
     parser.add_argument("--tolerance-seconds", type=float, default=3.0)
     parser.add_argument("--tolerance-fwhm", type=float, default=0.5, help="of the peak's width at half height")
     parser.add_argument("--window", type=int, default=4096)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out")
+    parser.add_argument("--details", help="a .json of each trace's peaks and apexes found")
     args = parser.parse_args(argv)
-    labels = args.labels or str(Path(args.dataset).with_name(Path(args.dataset).name.removesuffix(".npz") + ".labels.json"))
-    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    model = build(checkpoint["config"]["model"], **checkpoint["config"]["model_options"]).to(args.device)
-    model.load_state_dict(checkpoint["model"])
-    model.eval()
+    if args.labels and len(args.dataset) > 1:
+        parser.error("--labels is of a single --dataset")
+    model, checkpoint = None, None
+    if args.checkpoint:
+        checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        model = build(checkpoint["config"]["model"], **checkpoint["config"]["model_options"]).to(args.device)
+        model.load_state_dict(checkpoint["model"])
+        model.eval()
     step = args.step_seconds / 60
     tolerance = args.tolerance_seconds / args.step_seconds  # in points of the step
 
-    records_by: dict[str, list] = {}
-    positives_by: dict[str, int] = {}
-    for trace in read_labeled(args.dataset, labels):
-        grid, values, missing = drawn(trace["rt"], trace["intensity"], step)
-        found = detect(model, values, missing, args.window, args.device)
-        peaks = [SimpleNamespace(apex=(rt - grid[0]) / step, fwhm=width / step, label=label)
-                 for key, label in (("peaks", "positive"), ("unsure", "ignore"))
-                 for rt, width in zip(trace[key], half_widths(trace["rt"], trace["intensity"], trace[key],
-                                                              trace["peaks"]))]
-        records, _ = match(found, peaks, tolerance=(tolerance, args.tolerance_fwhm))
-        for key in ("all", trace["kind"]):
-            records_by.setdefault(key, []).extend(records)
-            positives_by[key] = positives_by.get(key, 0) + len(trace["peaks"])
-    summary = {"checkpoint": args.checkpoint, "step": checkpoint["step"],
-               "provenance": checkpoint["config"].get("provenance")}
-    for key, records in records_by.items():
-        positives = positives_by[key]
-        entry = {"traces_peaks": positives, "ap": average_precision(records, positives)}
-        for threshold in THRESHOLDS:
-            true = sum(1 for confidence, is_true in records if confidence >= threshold and is_true)
-            false = sum(1 for confidence, is_true in records if confidence >= threshold and not is_true)
-            entry[f"precision@{threshold}"] = true / max(true + false, 1)
-            entry[f"recall@{threshold}"] = true / max(positives, 1)
-        summary[key] = entry
+    groups: dict[tuple[str, str], list] = {}  # ("all", "") or ("kind" or "dataset", its name): records, peaks, traces
+    details = []
+    for dataset in args.dataset:
+        dataset_name = Path(dataset).name.removesuffix(".npz")
+        for trace in read_labeled(dataset, args.labels or labels_of(dataset)):
+            grid, values, missing = drawn(trace["rt"], trace["intensity"], step)
+            if model is None:
+                found = [{"apex": (top["rt"] - grid[0]) / step, "confidence": top["confidence"]}
+                         for top in app_tops(args.app, trace["rt"], trace["intensity"])]
+            else:
+                found = detect(model, values, missing, args.window, args.device)
+            peaks = [SimpleNamespace(rt=rt, apex=(rt - grid[0]) / step, fwhm=width / step, label=label)
+                     for key, label in (("peaks", "positive"), ("unsure", "ignore"))
+                     for rt, width in zip(trace[key], half_widths(trace["rt"], trace["intensity"], trace[key],
+                                                                  trace["peaks"]))]
+            assigned = assign(found, peaks, tolerance=(tolerance, args.tolerance_fwhm))
+            records = [(apex["confidence"], peak is not None) for apex, peak, counts in assigned if counts]
+            for key in (("all", ""), ("kind", trace["kind"]), ("dataset", dataset_name)):
+                group = groups.setdefault(key, [[], 0, 0])
+                group[0] += records
+                group[1] += len(trace["peaks"])
+                group[2] += 1
+            if args.details:
+                found_at = {id(peak): apex["confidence"] for apex, peak, _counts in assigned if peak is not None}
+                details.append({
+                    "dataset": dataset_name, "id": trace["id"], "run": trace["run"], "name": trace["name"],
+                    "peaks": [{"rt": peak.rt, "fwhm": peak.fwhm * step, "unsure": peak.label == "ignore",
+                               "found_at": found_at.get(id(peak))} for peak in peaks],
+                    "found": [{"rt": grid[0] + apex["apex"] * step, "confidence": apex["confidence"],
+                               "outcome": "true" if peak is not None else "false" if counts else "ignored"}
+                              for apex, peak, counts in assigned],
+                })
+    summary = {"detector": args.checkpoint or f"app:{args.app}", "datasets": args.dataset}
+    if checkpoint is not None:
+        summary |= {"step": checkpoint["step"], "provenance": checkpoint["config"].get("provenance")}
+    summary["all"] = scores(*groups[("all", "")]) if groups else scores([], 0, 0)
+    for kind in ("kind", "dataset"):
+        summary[f"by_{kind}"] = {name: scores(*group) for (key, name), group in groups.items() if key == kind}
     print(json.dumps(summary, indent=1))
     if args.out:
         Path(args.out).write_text(json.dumps(summary, indent=1))
+    if args.details:
+        Path(args.details).write_text(json.dumps(details, indent=1))
     return 0
 
 

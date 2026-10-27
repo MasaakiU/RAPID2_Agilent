@@ -30,6 +30,12 @@ def test_a_sample_is_the_same_of_the_same_seed_and_finite():
     assert np.isfinite(first.signal).all() and np.isfinite(first.clean).all()
 
 
+def test_the_clean_signal_of_a_signal_cut_at_0_is_cut_there_too():
+    floored = [sample for sample in (simulate(np.random.default_rng(seed)) for seed in range(60))
+               if "floor" in sample.meta["noise"]]
+    assert floored and all(sample.clean.min() >= 0 for sample in floored)
+
+
 def test_a_reversed_sample_is_the_same_one_mirrored():
     plain = simulate(np.random.default_rng(3), replace(Config(), reverse=0.0))
     mirrored = simulate(np.random.default_rng(3), replace(Config(), reverse=1.0))
