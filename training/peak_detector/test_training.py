@@ -54,13 +54,19 @@ def test_a_window_cut_of_a_sample_moves_its_peaks_and_scores_none_at_its_ends():
                              peaks=[_peak(450.0), _peak(503.0), _peak(990.0)], meta={})
 
     class Start:
+        """500, or the nearest it can be."""
         def integers(self, low, high):
-            return 500
+            return min(max(500, low), high - 1)
 
     window = cut(sample, 400, Start())
     assert window["signal"][0] == 500
     # 450 is out of it, 503 by its start (less than half its FWHM in), 990 out at the far end
     assert [(peak.apex, peak.label) for peak in window["peaks"]] == [(3.0, "ignore")]
+    # of a sample not measured over a part, the window is where it has that part; of a part longer than it, where
+    # the signal comes back in its middle
+    for zeros, start in (([0, 30], 0), ([920, 960], 560), ([50, 600], 400)):
+        sample.meta = {"zeros": zeros}
+        assert cut(sample, 400, Start())["signal"][0] == start
 
 
 def test_the_clean_channels_are_of_the_noisy_ones_scaling():

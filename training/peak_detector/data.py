@@ -17,9 +17,18 @@ VALIDATION_SEED = 1_000_003  # of the validation samples, apart from the trainin
 def cut(sample, length: int, rng: np.random.Generator) -> dict:
     """A window of length points of the sample, at random where it is longer, padded at its end with its last value
     where shorter (valid False there); its peaks moved into it. A peak whose top is near an end of the window, or
-    just past it, is not scored there."""
+    just past it, is not scored there. Of a sample not measured over a part, the window is where it has that part,
+    or, of a part longer than it, where the signal comes back in its middle."""
     n = len(sample.signal)
-    start = int(rng.integers(0, n - length + 1)) if n >= length else 0
+    start = 0
+    if n >= length:
+        low, high = 0, n - length
+        if sample.meta.get("zeros"):
+            first, end = sample.meta["zeros"]
+            low, high = max(low, end - length), min(high, first)
+            if low > high:
+                low = high = min(max(end - length // 2, 0), n - length)
+        start = int(rng.integers(low, high + 1))
     shown = min(length, n)
 
     def window(values, fill):

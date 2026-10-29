@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from simulator import SHAPES, Config, _labels, _measure, _saturation, _shape, _shape_params, simulate  # noqa: E402
+from simulator import (SHAPES, Config, _baseline, _labels, _measure, _saturation, _shape, _shape_params,  # noqa: E402
+                       simulate)
 
 
 @pytest.mark.parametrize("shape", SHAPES)
@@ -37,8 +38,8 @@ def test_the_clean_signal_of_a_signal_cut_at_0_is_cut_there_too():
 
 
 def test_a_reversed_sample_is_the_same_one_mirrored():
-    plain = simulate(np.random.default_rng(3), replace(Config(), reverse=0.0))
-    mirrored = simulate(np.random.default_rng(3), replace(Config(), reverse=1.0))
+    plain = simulate(np.random.default_rng(3), replace(Config(), reverse=0.0, zeros=0.0))
+    mirrored = simulate(np.random.default_rng(3), replace(Config(), reverse=1.0, zeros=0.0))
     np.testing.assert_array_equal(mirrored.signal, plain.signal[::-1])
     last = len(plain.signal) - 1
     assert [last - peak.apex for peak in reversed(mirrored.peaks)] == pytest.approx([peak.apex for peak in plain.peaks])
@@ -55,6 +56,62 @@ def test_the_labels_follow_the_snr_and_the_ends():
                 assert min(peak.apex, len(sample.signal) - 1 - peak.apex) >= peak.fwhm / 2
             elif peak.label == "negative":
                 assert peak.snr <= config.snr_negative
+
+
+def test_a_part_not_measured_is_0_and_the_rest_the_same_sample():
+    kinds, bursts = set(), 0
+    for seed in range(60):
+        plain = simulate(np.random.default_rng(seed), replace(Config(), zeros=0.0))
+        gap = simulate(np.random.default_rng(seed), replace(Config(), zeros=1.0))
+        length, (first, end) = len(gap.signal), gap.meta["zeros"]
+        assert 0 < end - first <= length // 3
+        kinds.add("start" if first == 0 else "end" if end == length else "between")
+        assert not gap.signal[first:end].any() and not gap.clean[first:end].any() and not gap.missing[first:end].any()
+        # before the 0s as it was; after them, the burst on it if any
+        np.testing.assert_array_equal(gap.signal[:first], plain.signal[:first])
+        burst = gap.signal[end:] - plain.signal[end:]
+        np.testing.assert_allclose(gap.clean[end:] - plain.clean[end:], burst, rtol=1e-4, atol=1e-2)
+        assert gap.meta["burst"] == bool(len(burst) and np.abs(burst).max() > 1e-3)
+        assert not len(burst) or burst.min() > -1e-2
+        bursts += gap.meta["burst"]
+        # of the peaks, those of tops in the 0s further than half their FWHM from where it is measured gone; those
+        # within half their FWHM of it, in the 0s or out, not scored
+        edges = [edge for edge, there in ((first - 1, first > 0), (end, end < length)) if there]
+
+        def inside(peak):
+            return first - 1 < peak.apex < end
+
+        def nearest(peak):
+            return min(abs(peak.apex - edge) for edge in edges)
+
+        assert [peak.apex for peak in gap.peaks] == [peak.apex for peak in plain.peaks
+                                                    if not (inside(peak) and nearest(peak) > peak.fwhm / 2)]
+        for peak in gap.peaks:
+            assert peak.label != "positive" or (not inside(peak) and nearest(peak) >= peak.fwhm / 2)
+    assert kinds == {"start", "end", "between"} and 10 < bursts < 40
+
+
+def test_a_sudden_step_of_the_baseline_is_up_down_from_0_or_to_0_within_a_few_points():
+    x = np.arange(2000, dtype=float)
+    for seed in range(10):
+        def baseline(kind):
+            config = replace(Config(), jump=0.0) if kind is None else \
+                replace(Config(), jump=1.0, jump_kinds=tuple(float(k == kind) for k in range(4)))
+            return _baseline(np.random.default_rng(seed), config, x, 300.0)
+
+        plain, _kinds = baseline(None)
+        up, kinds = baseline(0)
+        size = up[-1] - plain[-1]
+        rise = (up - plain) / size  # the step's part at each point, from 0 to 1
+        assert kinds[-1] == "jump up" and size >= 1
+        assert rise[0] < 1e-6 and rise[-1] > 1 - 1e-6
+        assert np.flatnonzero(rise > 0.9)[0] - np.flatnonzero(rise > 0.1)[0] <= 5
+        # the others of the same place, width and size
+        for kind, name, expected in ((1, "jump down", plain + size * (1 - rise)), (2, "jump from 0", (plain + size) * rise),
+                                     (3, "jump to 0", (plain + size) * (1 - rise))):
+            stepped, kinds = baseline(kind)
+            assert kinds[-1] == name
+            np.testing.assert_allclose(stepped, expected, rtol=1e-9, atol=1e-6 * size)
 
 
 def _pair(apart: float, smaller: float):
@@ -84,7 +141,7 @@ def test_of_a_pair_between_merge_and_split_only_the_smaller_is_not_scored():
 
 
 def test_a_coarse_sample_is_its_grid_interpolated_linearly():
-    config = replace(Config(), coarse=1.0, reverse=0.0)
+    config = replace(Config(), coarse=1.0, reverse=0.0, zeros=0.0)
     for seed in range(10):
         sample = simulate(np.random.default_rng(seed), config)
         factor = sample.meta["coarse"]
@@ -99,7 +156,7 @@ def test_a_coarse_sample_is_its_grid_interpolated_linearly():
 
 def test_points_missing_are_interpolated_across():
     for seed in range(40):
-        sample = simulate(np.random.default_rng(seed), replace(Config(), coarse=0.0))
+        sample = simulate(np.random.default_rng(seed), replace(Config(), coarse=0.0, zeros=0.0))
         if sample.missing.any() and not sample.missing.all():
             x = np.arange(len(sample.signal))
             across = np.interp(x, x[~sample.missing], sample.signal[~sample.missing])

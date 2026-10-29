@@ -4,14 +4,14 @@ SPEC.md defines them. numpy and scipy only, so that it runs on the GPU machine a
 The x axis is in points: a sample is of `length` points, a peak's width its FWHM in points.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
-from scipy.special import erfcx
+from scipy.special import erfcx, expit
 
 SHAPES = ("gauss", "emg", "bigauss", "voigt", "unimodal")
 # of the samples and their labels, as SPEC.md's: one more at each change of them, which every run records
-VERSION = 4
+VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,24 @@ class Config:
     # of peaks over 200 points, found several tops on them, as on real ones of up to 280 (data/peak_eval: POPA, 138 s)
     broad: float = 0.2
     broad_width: tuple[float, float] = (120.0, 280.0)
+    # of the samples, those not measured over a part, 0 there: at the start (measured late; data/peak_eval: 0 for the
+    # first 0 to 17 scans of 1 s, on which v4's models found false tops), at the end (stopped early) or between (the
+    # flow to the waste a while). Where it comes back, its first points above it in some (zeros_burst, of a height
+    # of zeros_burst_height times the signal there, down by e each zeros_burst_decay points; data/peak_eval: the
+    # first scan or two up to 5 times the rest)
+    zeros: float = 0.2
+    zeros_points: tuple[float, float] = (4.0, 400.0)  # up to a third of the sample
+    zeros_where: tuple[float, float, float] = (0.5, 0.25, 0.25)  # at the start, at the end, between
+    zeros_burst: float = 0.5
+    zeros_burst_height: tuple[float, float] = (0.3, 5.0)
+    zeros_burst_decay: tuple[float, float] = (0.5, 10.0)
+    # of the samples, those of a sudden step of the baseline (as where the measuring's settings change): up, down, up
+    # from 0 or down to 0, the noise and the peaks on it as elsewhere. One a sample, as two of a few points apart would
+    # be a flat top, as of a saturated peak
+    jump: float = 0.1
+    jump_size: tuple[float, float] = (1.0, 1e3)  # of the white noise, 1
+    jump_scale: tuple[float, float] = (0.2, 1.0)  # points, of its logistic: from 10 to 90 % in 4.4 times it
+    jump_kinds: tuple[float, float, float, float] = (0.3, 0.3, 0.2, 0.2)  # up, down, up from 0, down to 0
 
 
 @dataclass
@@ -84,7 +102,10 @@ def simulate(rng: np.random.Generator, config: Config = Config()) -> Sample:
     sample = _simulate_grid(rng, config, grid_length, width, fwhm_range)
     if factor > 1:
         sample = _upsampled(sample, factor)
-    return _reversed(sample) if rng.random() < config.reverse else sample
+    if rng.random() < config.reverse:
+        sample = _reversed(sample)
+    # after the reversal, so that a burst is after the 0s in time
+    return _zeros(rng, config, sample) if rng.random() < config.zeros else sample
 
 
 def _simulate_grid(rng, config, length, width, fwhm_range) -> Sample:
@@ -93,7 +114,7 @@ def _simulate_grid(rng, config, length, width, fwhm_range) -> Sample:
     clean_peaks = np.zeros(length)
     for component in components:
         clean_peaks += component["height"] * _shape(component, x)
-    baseline, baseline_kinds = _baseline(rng, x, fwhm_range[1])
+    baseline, baseline_kinds = _baseline(rng, config, x, fwhm_range[1])
     clean = baseline + clean_peaks
     saturation = _saturation(rng, config, x, components, baseline, clean)
     if saturation is not None:
@@ -255,9 +276,9 @@ def _shape(component: dict, x: np.ndarray) -> np.ndarray:
 
 
 ### baseline, saturation, noise, missing points ###
-def _baseline(rng, x, widest) -> tuple[np.ndarray, list[str]]:
-    """An offset, a drift, humps and steps: of what changes slower than a peak of the widest FWHM. A hump no wider
-    is a peak."""
+def _baseline(rng, config, x, widest) -> tuple[np.ndarray, list[str]]:
+    """An offset, a drift, humps and steps: of what changes slower than a peak of the widest FWHM, as a hump no wider
+    is a peak; and a sudden step in some, which no peak is like."""
     length, sigma = len(x), widest / 2.3548
     baseline, kinds = np.full(length, _log_uniform(rng, 0.1, 1e4) if rng.random() < 0.7 else 0.0), ["offset"]
     if rng.random() < 0.4:
@@ -272,6 +293,19 @@ def _baseline(rng, x, widest) -> tuple[np.ndarray, list[str]]:
         width = sigma * _log_uniform(rng, 1, 3)
         baseline += rng.choice([-1, 1]) * _log_uniform(rng, 0.3, 1e3) / (1 + np.exp(-(x - rng.uniform(0, length)) / width))
         kinds.append("step")
+    if rng.random() < config.jump:
+        rise = expit((x - rng.uniform(0.05, 0.95) * length) / _log_uniform(rng, *config.jump_scale))
+        size = _log_uniform(rng, *config.jump_size)
+        kind = rng.choice(4, p=config.jump_kinds)
+        if kind == 0:
+            baseline = baseline + size * rise
+        elif kind == 1:
+            baseline = baseline + size * (1 - rise)
+        elif kind == 2:
+            baseline = (baseline + size) * rise
+        else:
+            baseline = (baseline + size) * (1 - rise)
+        kinds.append(("jump up", "jump down", "jump from 0", "jump to 0")[kind])
     return baseline, kinds
 
 
@@ -339,6 +373,50 @@ def _missing(rng, length) -> np.ndarray:
         for start in rng.integers(0, length, int(rng.poisson(length * 0.005))):
             missing[start:start + int(rng.integers(1, 6))] = True
     return missing
+
+
+def _zeros(rng, config, sample: Sample) -> Sample:
+    """The sample not measured over a part: 0 there (measured, not missing), at its start, its end or between; the
+    signal as it was elsewhere, and where it comes back a burst on its first points in some. The burst is not a peak;
+    of the peaks, those of tops in the 0s further than half their FWHM from where it is measured are gone, and those
+    of tops within half their FWHM of that not scored, as at an end of a sample."""
+    length = len(sample.signal)
+    points = min(int(round(_log_uniform(rng, *config.zeros_points))), length // 3)
+    where = rng.choice(3, p=config.zeros_where)
+    if where == 0:
+        first = 0
+    elif where == 1:
+        first = length - points
+    else:
+        first = int(rng.integers(10, length - points - 10))
+    end = first + points  # the 0s are first:end
+    burst = np.zeros(length)
+    if end < length and rng.random() < config.zeros_burst:
+        level = max(float(np.median(sample.clean[end:end + 20])), 1.0)  # of the white noise, 1
+        decay = _log_uniform(rng, *config.zeros_burst_decay)
+        burst[end:] = _log_uniform(rng, *config.zeros_burst_height) * level * np.exp(-np.arange(length - end) / decay)
+
+    def measured(values):
+        values = values + burst
+        values[first:end] = 0.0
+        return values.astype(np.float32)
+
+    missing = sample.missing.copy()
+    missing[first:end] = False
+    # where it is measured beside the 0s: the last point before them, the first after
+    edges = [edge for edge, there in ((first - 1, first > 0), (end, end < length)) if there]
+    peaks = []
+    for peak in sample.peaks:
+        inside = first - 1 < peak.apex < end
+        nearest = min(abs(peak.apex - edge) for edge in edges)
+        if inside and nearest > peak.fwhm / 2:
+            continue
+        if peak.label == "positive" and (inside or nearest < peak.fwhm / 2):
+            peak = replace(peak, label="ignore")
+        peaks.append(peak)
+    return Sample(measured(sample.signal), measured(sample.clean), missing, peaks,
+                  None if sample.twin is None else measured(sample.twin),
+                  sample.meta | {"zeros": [first, end], "burst": bool(burst.any())})
 
 
 ### labels ###
