@@ -35,18 +35,39 @@ def cut(sample, length: int, rng: np.random.Generator) -> dict:
         part = values[start:start + shown]
         return part if shown == length else np.concatenate([part, np.full(length - shown, fill, dtype=part.dtype)])
 
+    # the clean signal's parts (SPEC_deconvolution.md 2), of those samples that have them: past the end (valid False),
+    # none of the others, the noise or the peaks'
+    parts = getattr(sample, "others", None) is not None
+    others = window(sample.others, 0.0).copy() if parts else None
+
+    def in_window(peak):
+        """Where its profile starts in the window, and the profile in the window only."""
+        at, profile = peak.start - start, peak.profile
+        if at < 0:
+            at, profile = 0, profile[-at:]
+        return at, profile[:max(shown - at, 0)]
+
     peaks = []
     for peak in sample.peaks:
         apex = peak.apex - start
+        at, profile = in_window(peak) if parts else (0, None)
         if -peak.fwhm / 2 <= apex <= shown - 1 + peak.fwhm / 2:
             label = peak.label
             if label == "positive" and (apex < peak.fwhm / 2 or apex > shown - 1 - peak.fwhm / 2):
                 label = "ignore"
-            peaks.append(replace(peak, apex=float(np.clip(apex, 0, shown - 1)), label=label))
+            peaks.append(replace(peak, apex=float(np.clip(apex, 0, shown - 1)), label=label,
+                                 **({"start": at, "profile": profile} if parts else {})))
+        elif parts:
+            # of a peak out of the window, what of it is in it
+            others[at:at + len(profile)] += profile
     valid = np.zeros(length, dtype=bool)
     valid[:shown] = True
-    return {"signal": window(sample.signal, sample.signal[-1]), "clean": window(sample.clean, sample.clean[-1]),
-            "missing": window(sample.missing, False), "valid": valid, "peaks": peaks, "meta": sample.meta}
+    out = {"signal": window(sample.signal, sample.signal[-1]), "clean": window(sample.clean, sample.clean[-1]),
+           "missing": window(sample.missing, False), "valid": valid, "peaks": peaks, "meta": sample.meta}
+    if parts:
+        out |= {"baseline": window(sample.baseline, sample.baseline[-1]), "others": others,
+                "sigma": window(sample.sigma, 0.0)}
+    return out
 
 
 def make_item(sample, length: int, stride: int, rng: np.random.Generator) -> tuple[dict, dict]:

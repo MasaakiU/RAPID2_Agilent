@@ -10,8 +10,9 @@ import numpy as np
 from scipy.special import erfcx, expit
 
 SHAPES = ("gauss", "emg", "bigauss", "voigt", "unimodal")
-# of the samples and their labels, as SPEC.md's: one more at each change of them, which every run records
-VERSION = 5
+# of the samples and their labels, as SPEC.md's: one more at each change of them, which every run records. 6: the
+# clean signal's parts (SPEC_deconvolution.md 2) added; the signals and the labels of the peaks as 5's
+VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,10 @@ class Peak:
     label: str  # "positive", "ignore" (not scored) or "negative"
     saturated: bool = False
     components: int = 1  # more for components too close to be told apart, taken for one
+    # its own part of the clean signal (SPEC_deconvolution.md 2), from the point start on, where it is over a
+    # millionth of its top
+    start: int = field(default=0, compare=False, repr=False)
+    profile: np.ndarray | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -85,6 +90,10 @@ class Sample:
     peaks: list[Peak]
     twin: np.ndarray | None = None  # the clean signal with another noise
     meta: dict = field(default_factory=dict)
+    # the rest of the clean signal's parts (SPEC_deconvolution.md 2): clean = baseline + others + the peaks' profiles
+    baseline: np.ndarray | None = None
+    others: np.ndarray | None = None  # of the components of no peak listed (their tops past the ends), and far tails
+    sigma: np.ndarray | None = None  # the noise's standard deviation at each point, of the spikes none
 
 
 def simulate(rng: np.random.Generator, config: Config = Config()) -> Sample:
@@ -113,13 +122,14 @@ def _simulate_grid(rng, config, length, width, fwhm_range) -> Sample:
     components = [] if rng.random() < config.empty else _components(rng, config, length, width, fwhm_range)
     clean_peaks = np.zeros(length)
     for component in components:
-        clean_peaks += component["height"] * _shape(component, x)
+        component["values"] = component["height"] * _shape(component, x)
+        clean_peaks += component["values"]
     baseline, baseline_kinds = _baseline(rng, config, x, fwhm_range[1])
     clean = baseline + clean_peaks
     saturation = _saturation(rng, config, x, components, baseline, clean)
     if saturation is not None:
         clean = saturation["clean"]
-    signal, noise_kinds = _noisy(rng, clean, saturation)
+    signal, noise_kinds, sigma = _noisy(rng, clean, saturation)
     twin = _noisy(rng, clean, saturation)[0] if rng.random() < config.twin else None
     missing = _missing(rng, length)
     peaks = _labels(config, x, components, signal - clean, missing, saturation, length)
@@ -129,9 +139,43 @@ def _simulate_grid(rng, config, length, width, fwhm_range) -> Sample:
         clean = np.maximum(clean, 0.0)
     # the points not measured: across them, as the scans not measured are left out and the rest interpolated
     signal, twin = _across(signal, missing), None if twin is None else _across(twin, missing)
+    peaks, baseline, others = _parts(peaks, baseline, clean_peaks, clean)
     return Sample(signal.astype(np.float32), clean.astype(np.float32), missing, peaks,
                   None if twin is None else twin.astype(np.float32),
-                  {"width": width, "baseline": baseline_kinds, "noise": noise_kinds, "coarse": 1})
+                  {"width": width, "baseline": baseline_kinds, "noise": noise_kinds, "coarse": 1},
+                  baseline.astype(np.float32), others.astype(np.float32), sigma.astype(np.float32))
+
+
+def _parts(peaks, baseline, clean_peaks, clean):
+    """The clean signal in its parts (SPEC_deconvolution.md 2): the peaks' own (each from where it is over a millionth
+    of its top), the baseline, and the others. What the saturation cut is taken at each point from the largest of the
+    peaks and the others first, so that a peak beside the one saturated keeps its shape (the baseline only of what is
+    over them all), and what the floor raised is the baseline's, as below 0 only it can be."""
+    total = baseline + clean_peaks
+    cut = np.maximum(total - clean, 0.0)
+    from_peaks = np.minimum(cut, clean_peaks)
+    baseline = baseline - (cut - from_peaks) + np.maximum(clean - total, 0.0)
+    profiles = [peak.profile.copy() for peak in peaks]
+    others = clean_peaks - sum(profiles, np.zeros_like(clean_peaks))
+    points = np.flatnonzero(from_peaks > 0)
+    if len(points):
+        parts = np.array([profile[points] for profile in profiles] + [others[points]])
+        order = np.argsort(-parts, axis=0)
+        ranked = np.take_along_axis(parts, order, axis=0)
+        taken = np.zeros_like(parts)
+        np.put_along_axis(taken, order, np.clip(from_peaks[points] - (np.cumsum(ranked, axis=0) - ranked), 0, ranked),
+                          axis=0)
+        for profile, part in zip(profiles, taken[:-1]):
+            profile[points] -= part
+        others[points] -= taken[-1]
+    trimmed = []
+    for peak, profile in zip(peaks, profiles):
+        over = np.flatnonzero(profile > 1e-6 * profile.max()) if profile.max() > 0 else np.zeros(0, dtype=int)
+        start, end = (int(over[0]), int(over[-1]) + 1) if len(over) else (0, 0)
+        others[:start] += profile[:start]
+        others[end:] += profile[end:]
+        trimmed.append(replace(peak, start=start, profile=profile[start:end].astype(np.float32)))
+    return trimmed, baseline, others
 
 
 def _across(values: np.ndarray, missing: np.ndarray) -> np.ndarray:
@@ -152,12 +196,28 @@ def _upsampled(sample: Sample, factor: int) -> Sample:
         return np.interp(fine, grid[measured], values[measured]).astype(np.float32) if measured.any() else \
             np.interp(fine, grid, values).astype(np.float32)
 
-    peaks = [Peak(p.apex * factor, p.height, p.fwhm * factor, p.left * factor, p.right * factor, p.shape, p.snr,
-                  p.label, p.saturated, p.components) for p in sample.peaks]
-    return Sample(up(sample.signal), np.interp(fine, grid, sample.clean).astype(np.float32),
-                  np.interp(fine, grid, sample.missing.astype(float)) > 0, peaks,
-                  None if sample.twin is None else up(sample.twin),
-                  sample.meta | {"width": sample.meta["width"] * factor, "coarse": factor})
+    def all_up(values):
+        return np.interp(fine, grid, values).astype(np.float32)
+
+    def profile_up(peak):
+        """Its profile on the fine points, out to where it is 0 on the grid beside it."""
+        if not len(peak.profile):
+            return 0, peak.profile
+        at = np.arange(peak.start - 1, peak.start + len(peak.profile) + 1)
+        points = np.arange(max(at[0] * factor + 1, 0), min(at[-1] * factor - 1, len(fine) - 1) + 1)
+        return int(points[0]), np.interp(points / factor, at, np.concatenate([[0], peak.profile, [0]])).astype(np.float32)
+
+    peaks = []
+    for p in sample.peaks:
+        start, profile = profile_up(p)
+        peaks.append(replace(p, apex=p.apex * factor, fwhm=p.fwhm * factor, left=p.left * factor, right=p.right * factor,
+                             start=start, profile=profile))
+    # the noise's standard deviation interpolated as it is: of the points between the grid's, about it (their noise
+    # is of those beside them, not their own)
+    return Sample(up(sample.signal), all_up(sample.clean), np.interp(fine, grid, sample.missing.astype(float)) > 0,
+                  peaks, None if sample.twin is None else up(sample.twin),
+                  sample.meta | {"width": sample.meta["width"] * factor, "coarse": factor},
+                  all_up(sample.baseline), all_up(sample.others), all_up(sample.sigma))
 
 
 ### components ###
@@ -335,27 +395,37 @@ def _saturation(rng, config, x, components, baseline, clean) -> dict | None:
             "points": len(region)}
 
 
-def _noisy(rng, clean, saturation) -> tuple[np.ndarray, list[str]]:
+def _noisy(rng, clean, saturation) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """The signal, the kinds of its noise, and the noise's standard deviation at each point (of the spikes none)."""
     length = len(clean)
-    noise, kinds = rng.normal(0, 1, length), ["white"]
+    noise, kinds, variance = rng.normal(0, 1, length), ["white"], np.ones(length)
     if rng.random() < 0.3:
         frequencies = np.fft.rfftfreq(length)
         frequencies[0] = frequencies[1]
         colored = np.fft.irfft(np.fft.rfft(rng.normal(0, 1, length)) * frequencies ** (-rng.uniform(0.5, 1.5) / 2), length)
-        noise += colored / colored.std() * rng.uniform(0.5, 2)
+        scale = rng.uniform(0.5, 2)
+        noise += colored / colored.std() * scale
+        variance += scale ** 2
         kinds.append("colored")
     level = np.maximum(clean - clean.min(), 0)
     if rng.random() < 0.5:
-        noise += rng.normal(0, 1, length) * np.sqrt(_log_uniform(rng, 0.01, 10) * level)
+        draws = rng.normal(0, 1, length)
+        shot = _log_uniform(rng, 0.01, 10)
+        noise += draws * np.sqrt(shot * level)
+        variance += shot * level
         kinds.append("shot")
     if rng.random() < 0.3:
         # up to 30 %, as on the tops of real broad peaks (data/peak_eval: 8 to 28 %), on which v2's models, of up to
         # 10 %, found several tops
-        noise += rng.normal(0, 1, length) * _log_uniform(rng, 0.01, 0.3) * level
+        draws = rng.normal(0, 1, length)
+        part = _log_uniform(rng, 0.01, 0.3)
+        noise += draws * part * level
+        variance += (part * level) ** 2
         kinds.append("multiplicative")
     if saturation is not None:
         # little noise where the detector is saturated
         noise[saturation["start"]:saturation["end"] + 1] *= 0.1
+        variance[saturation["start"]:saturation["end"] + 1] *= 0.01
     signal = clean + noise
     if rng.random() < 0.3:
         count = int(rng.poisson(length * _log_uniform(rng, 1e-4, 5e-3)))
@@ -364,7 +434,7 @@ def _noisy(rng, clean, saturation) -> tuple[np.ndarray, list[str]]:
     if rng.random() < 0.3:
         signal = np.maximum(signal, 0.0)
         kinds.append("floor")
-    return signal, kinds
+    return signal, kinds, np.sqrt(variance)
 
 
 def _missing(rng, length) -> np.ndarray:
@@ -403,20 +473,29 @@ def _zeros(rng, config, sample: Sample) -> Sample:
 
     missing = sample.missing.copy()
     missing[first:end] = False
+    # of the parts, the burst the baseline's; the others' and the peaks' 0 in the 0s, and those of the peaks gone the
+    # others'
+    others, sigma = sample.others.copy(), sample.sigma.copy()
+    others[first:end] = 0.0
+    sigma[first:end] = 0.0
     # where it is measured beside the 0s: the last point before them, the first after
     edges = [edge for edge, there in ((first - 1, first > 0), (end, end < length)) if there]
     peaks = []
     for peak in sample.peaks:
+        profile = peak.profile.copy()
+        profile[max(first - peak.start, 0):max(end - peak.start, 0)] = 0.0
         inside = first - 1 < peak.apex < end
         nearest = min(abs(peak.apex - edge) for edge in edges)
         if inside and nearest > peak.fwhm / 2:
+            others[peak.start:peak.start + len(profile)] += profile
             continue
-        if peak.label == "positive" and (inside or nearest < peak.fwhm / 2):
-            peak = replace(peak, label="ignore")
-        peaks.append(peak)
+        peaks.append(replace(peak, profile=profile,
+                             label="ignore" if peak.label == "positive" and (inside or nearest < peak.fwhm / 2)
+                             else peak.label))
     return Sample(measured(sample.signal), measured(sample.clean), missing, peaks,
                   None if sample.twin is None else measured(sample.twin),
-                  sample.meta | {"zeros": [first, end], "burst": bool(burst.any())})
+                  sample.meta | {"zeros": [first, end], "burst": bool(burst.any())},
+                  measured(sample.baseline), others, sigma)
 
 
 ### labels ###
@@ -484,8 +563,9 @@ def _labels(config, x, components, noise, missing, saturation, length) -> list[P
         # a peak's top cut by an end of the sample, or under a narrower peak, is not scored
         if label == "positive" and (min(apex, length - 1 - apex) < fwhm / 2 or (len(group) == 1 and group[0] in hidden)):
             label = "ignore"
+        profile = sum(p["values"] if "values" in p else p["height"] * _shape(p, x) for p in parts)
         peak = Peak(float(apex), float(height), float(fwhm), float(left), float(right), shape, float(snr), label,
-                    saturated, len(parts))
+                    saturated, len(parts), profile=profile)
         peaks.append(peak)
         for i in group:
             peak_of[i] = peak
@@ -503,10 +583,12 @@ def _labels(config, x, components, noise, missing, saturation, length) -> list[P
 
 def _reversed(sample: Sample) -> Sample:
     last = len(sample.signal) - 1
-    peaks = [Peak(last - p.apex, p.height, p.fwhm, p.right, p.left, p.shape, p.snr, p.label, p.saturated, p.components)
+    peaks = [replace(p, apex=last - p.apex, left=p.right, right=p.left,
+                     start=last - (p.start + len(p.profile) - 1) if len(p.profile) else 0, profile=p.profile[::-1].copy())
              for p in reversed(sample.peaks)]
     return Sample(sample.signal[::-1].copy(), sample.clean[::-1].copy(), sample.missing[::-1].copy(), peaks,
-                  None if sample.twin is None else sample.twin[::-1].copy(), sample.meta | {"reversed": True})
+                  None if sample.twin is None else sample.twin[::-1].copy(), sample.meta | {"reversed": True},
+                  sample.baseline[::-1].copy(), sample.others[::-1].copy(), sample.sigma[::-1].copy())
 
 
 def _log_uniform(rng, low, high, size=None):

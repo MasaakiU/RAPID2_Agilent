@@ -69,6 +69,22 @@ def test_a_window_cut_of_a_sample_moves_its_peaks_and_scores_none_at_its_ends():
         assert cut(sample, 400, Start())["signal"][0] == start
 
 
+def test_a_window_has_the_parts_of_its_clean_signal():
+    for seed in range(30):
+        rng = np.random.default_rng(seed)
+        sample = simulate(rng)
+        others = sample.others.copy()
+        window = cut(sample, 600, rng)
+        valid = window["valid"]
+        total = window["baseline"] + window["others"]
+        for peak in window["peaks"]:
+            assert peak.start >= 0 and peak.start + len(peak.profile) <= valid.sum()
+            total[peak.start:peak.start + len(peak.profile)] += peak.profile
+        scale = max(np.abs(window["clean"][valid]).max(), 1.0)
+        np.testing.assert_allclose(total[valid], window["clean"][valid], rtol=0, atol=1e-5 * scale)
+        np.testing.assert_array_equal(sample.others, others)  # the sample's own as they were
+
+
 def test_the_clean_channels_are_of_the_noisy_ones_scaling():
     rng = np.random.default_rng(0)
     clean = 100 * np.exp(-((np.arange(500) - 250) / 10) ** 2 / 2) + 50

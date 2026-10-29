@@ -1,6 +1,6 @@
 # ピーク検出モデル（前段）の学習
 
-二段構成の前段（ピークトップの検出）を、合成データだけで学習するコード。仕様は [SPEC.md](SPEC.md)。アプリ本体（`src/RAPID2_Agilent`）にも正解付けツール（`tools/peak_labeling`）にも依存しない。このフォルダだけで動く。
+二段構成の前段（ピークトップの検出）を、合成データだけで学習するコード。仕様は [SPEC.md](SPEC.md)。後段（ピークの分離）の仕様の案は [SPEC_deconvolution.md](SPEC_deconvolution.md)。アプリ本体（`src/RAPID2_Agilent`）にも正解付けツール（`tools/peak_labeling`）にも依存しない。このフォルダだけで動く。
 
 ## ファイル
 

@@ -114,6 +114,46 @@ def test_a_sudden_step_of_the_baseline_is_up_down_from_0_or_to_0_within_a_few_po
             np.testing.assert_allclose(stepped, expected, rtol=1e-9, atol=1e-6 * size)
 
 
+def assert_parts_make_the_clean_signal(clean, baseline, others, peaks, valid=None):
+    """clean = baseline + others + the peaks' profiles, and the profiles and the others not below 0."""
+    total = baseline + others
+    for peak in peaks:
+        assert peak.profile.min() >= 0 and peak.start >= 0 and peak.start + len(peak.profile) <= len(clean)
+        total[peak.start:peak.start + len(peak.profile)] += peak.profile
+    valid = slice(None) if valid is None else valid
+    scale = max(np.abs(clean[valid]).max(), 1.0)
+    np.testing.assert_allclose(total[valid], clean[valid], rtol=0, atol=1e-5 * scale)
+    assert others[valid].min() >= -1e-5 * scale
+
+
+@pytest.mark.parametrize("changes", [{}, {"coarse": 1.0}, {"saturation": 1.0}, {"zeros": 1.0}, {"jump": 1.0},
+                                     {"reverse": 1.0, "zeros": 1.0}])
+def test_the_clean_signal_is_its_parts(changes):
+    config = replace(Config(), **changes)
+    saturated = 0
+    for seed in range(40):
+        sample = simulate(np.random.default_rng(seed), config)
+        assert_parts_make_the_clean_signal(sample.clean, sample.baseline, sample.others, sample.peaks)
+        saturated += any(peak.saturated for peak in sample.peaks)
+        if "zeros" in sample.meta:
+            first, end = sample.meta["zeros"]
+            assert not sample.baseline[first:end].any() and not sample.others[first:end].any()
+            assert not sample.sigma[first:end].any()
+    assert changes != {"saturation": 1.0} or saturated >= 5
+
+
+def test_the_noise_is_of_its_standard_deviation():
+    z = []
+    for seed in range(200):
+        sample = simulate(np.random.default_rng(seed), replace(Config(), coarse=0.0, zeros=0.0))
+        if {"spikes", "floor"} & set(sample.meta["noise"]):
+            continue
+        measured = ~sample.missing & (sample.sigma > 0)
+        z.append(((sample.signal - sample.clean) / np.where(measured, sample.sigma, 1))[measured])
+    z = np.concatenate(z)
+    assert len(z) > 50_000 and abs(z.std() - 1) < 0.05 and abs(z.mean()) < 0.05
+
+
 def _pair(apart: float, smaller: float):
     """Two Gaussians of a FWHM of 20 points, of heights 1000 and smaller, apart by that many points, on white noise
     of 1."""

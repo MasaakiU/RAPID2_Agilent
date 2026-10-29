@@ -41,8 +41,8 @@ def main(argv=None) -> int:
 def write_samples(path: Path, samples) -> None:
     meta, start = [], 0
     for sample in samples:
-        meta.append({"start": start, "end": start + len(sample.signal), "peaks": [asdict(p) for p in sample.peaks],
-                     "meta": sample.meta})
+        peaks = [{k: v for k, v in asdict(p).items() if k not in ("start", "profile")} for p in sample.peaks]
+        meta.append({"start": start, "end": start + len(sample.signal), "peaks": peaks, "meta": sample.meta})
         start += len(sample.signal)
     np.savez_compressed(
         path,
