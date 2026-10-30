@@ -52,8 +52,8 @@ DEFAULTS = {
 }
 
 
-def load_config(path: str | None, overrides: list[str]) -> dict:
-    config = json.loads(json.dumps(DEFAULTS))
+def load_config(path: str | None, overrides: list[str], defaults: dict = DEFAULTS) -> dict:
+    config = json.loads(json.dumps(defaults))
     if path:
         config |= json.loads(Path(path).read_text())
     for override in overrides:

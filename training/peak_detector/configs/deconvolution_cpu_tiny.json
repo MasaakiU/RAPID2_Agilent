@@ -1,0 +1,17 @@
+{
+ "model_options": {"encoder": "transformer",
+                   "encoder_options": {"width": 16, "middle": 24, "d_model": 32, "layers": 1, "heads": 2,
+                                       "feedforward": 64, "dropout": 0.0},
+                   "d_model": 32, "layers": 1, "heads": 2, "feedforward": 64, "dropout": 0.0,
+                   "grid": 32, "reach": 4.0, "shape_width": 16, "shape_dilations": [1, 2]},
+ "length": 512,
+ "batch": 4,
+ "steps": 20,
+ "warmup": 5,
+ "lr": 0.002,
+ "workers": 0,
+ "validation": 8,
+ "eval_every": 10,
+ "log_every": 5,
+ "amp": "none"
+}

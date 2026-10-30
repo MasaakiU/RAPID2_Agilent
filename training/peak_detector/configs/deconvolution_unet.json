@@ -1,0 +1,10 @@
+{
+ "model_options": {"encoder": "unet",
+                   "encoder_options": {"channels": [32, 64, 128, 256], "dilations": [1, 2, 4, 8, 16]},
+                   "d_model": 128, "layers": 3, "heads": 4, "feedforward": 512, "dropout": 0.1,
+                   "grid": 128, "reach": 4.0, "shape_width": 64, "shape_dilations": [1, 2, 4, 8]},
+ "length": 2048,
+ "batch": 32,
+ "steps": 100000,
+ "lr": 0.0003
+}

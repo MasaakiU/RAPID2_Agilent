@@ -18,8 +18,12 @@
 | `export.py` | 重みを `.npz` に書き出す（アプリは torch なしで読む） | torch |
 | `make_examples.py` | 合成データの例と図 | numpy, scipy, matplotlib |
 | `deconvolve.py` | 後段（ピークの分離）の、モデル以外の部品：候補、形の高さの最小二乗、評価 | numpy, scipy |
-| `evaluate_deconvolution.py` | 後段の比べる基準（正解の形での最小二乗、EMG の当てはめ、アプリのやり方）の、合成データでの評価 | numpy, scipy（窓の切り出しに torch） |
-| `configs/` | 設定（`transformer.json`、`unet.json`、`kensert.json`、動作確認用の `cpu_tiny.json`） | |
+| `evaluate_deconvolution.py` | 後段の比べる基準（正解の形での最小二乗、EMG の当てはめ、アプリのやり方）と、学習した後段の、合成データでの評価 | numpy, scipy（窓の切り出しとモデルに torch） |
+| `deconvolve_data.py` | 後段の学習データ（窓、誤りを足した候補、入力、候補ごとと窓の正解） | torch |
+| `deconvolve_models.py` | 後段のモデル（候補ごとの形・本物らしさ・高さ、窓のベースライン・その他・ノイズ）と、窓への後段（モデルのあとに最小二乗） | torch |
+| `deconvolve_losses.py` | 後段の損失（形、本物らしさ、高さ、ベースライン、その他、ノイズ、最小二乗で出した面積） | torch |
+| `train_deconvolution.py` | 後段の学習 | torch |
+| `configs/` | 設定（前段：`transformer.json`、`unet.json`、`kensert.json`、動作確認用の `cpu_tiny.json`。後段：`deconvolution.json`、`deconvolution_unet.json`、`deconvolution_cpu_tiny.json`） | |
 
 ## 環境
 
@@ -27,7 +31,7 @@ Python 3.11 以上と、`requirements.txt` のパッケージ（torch は CUDA �
 
 ```sh
 pip install -r requirements.txt
-python -m pytest -q          # 27 件、CPU で数秒
+python -m pytest -q          # 60 件、CPU で 30 秒ほど
 ```
 
 ## 学習
@@ -96,6 +100,30 @@ python evaluate_deconvolution.py --method app --count 300 --out app.json
 
 - `--candidates`：`oracle` は正解の頂点と幅、`perturbed` は前段の誤り（見落とし、ずれ、重複、何も無いところ）をまねたもの（`deconvolve.CandidateErrors`、前段の実際の出力で合わせる）。`truth` は、いつも正解のピークごと。
 - `emg` は、1 窓に 1〜4 秒ほどかかる。
+
+## 後段の学習
+
+前段の学習と同じく、合成データをその場で作りながら学習する。窓（`data.cut`）に、前段の誤りをまねた候補（`deconvolve.perturbed_candidates`）を付けて入れる。前段とは候補の一覧だけでつながり、前段を学習し直しても、後段は学習し直さずに済む。
+
+```sh
+python train_deconvolution.py --config configs/deconvolution.json --out runs/2026-10-30_deconvolution --set workers=12
+python train_deconvolution.py --resume runs/2026-10-30_deconvolution/last.pt --out runs/2026-10-30_deconvolution
+python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_deconvolution/best.pt \
+    --candidates perturbed --count 300 --out model.json   # 比べる基準と同じ 300 窓で
+```
+
+- 出力は前段と同じ（`config.json`、`metrics.jsonl`、`last.pt`、`best.pt`）。`metrics.jsonl` の `skipped` は、勾配が有限でなく飛ばしたステップの数（ずっと 0 のはず。増えていたら知らせてほしい）。
+- 検証（`eval_every` ごと、既定 2000 窓）は、使うときと同じ道筋で行う。本物らしさが `real`（既定 0.5）以上の候補を取り、高さを `scipy` の非負の最小二乗で出す。
+- 記録するもの：
+  - 面積・形・範囲の誤差を、全体と内訳ごとに
+  - 余計な候補が持った面積
+  - 本物らしさの AP と、`real` での適合率・再現率
+  - 各損失
+- `best.pt` は、`objective` が一番小さいもの。`objective` は、ピークごとの `log(1 + |面積の相対誤差|)` の平均（見落としは誤差 1）と、余計な候補が持った面積の割合の和。
+- 検証の窓の乱数（`deconvolve_data.VALIDATION_SEED`）は、比べる基準の窓（`evaluate_deconvolution.SEED`）とも、前段の検証とも別。
+- 損失の重み（`loss_weights`）、引き寄せの強さ（`strength`）、本物らしさのしきい値（`real`）は、最初の当て推量。学習の結果を見て決める（SPEC_deconvolution 6）。
+- `evaluate_deconvolution.py --method model` の `--real` と `--strength` で、学習し直さずに、取る候補と引き寄せの強さを変えて比べられる。
+- 速さ：エンコーダは前段の `transformer` と同じ。1 窓あたり、データ作りは 6 ms ほど（Apple M 系の CPU 1 コア）。バッチ 32 なら、`workers=12` で GPU が待つことはないはず。
 
 ## コードの版と、学習結果の出どころ
 

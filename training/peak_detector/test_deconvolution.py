@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deconvolve import (CandidateErrors, heights, oracle_candidates, perturbed_candidates, score, shaped,  # noqa: E402
-                        whole)
+from deconvolve import (CandidateErrors, clusters, corrections, heights, oracle_candidates,  # noqa: E402
+                        perturbed_candidates, score, shaped, whole)
 from evaluate_deconvolution import app, emg, fit_emg, truth  # noqa: E402
 from simulator import Config, Peak, Sample, simulate  # noqa: E402
 
@@ -35,14 +35,28 @@ def _window(heights_of, centers, fwhm=20.0, length=600, noise=0.0, seed=0):
 def test_heights_of_shapes_make_up_the_signal():
     x = np.arange(300, dtype=float)
     shapes = np.array([_gauss(x, 140, 20), _gauss(x, 160, 20)])
-    found, covariance = heights(3 * shapes[0] + 5 * shapes[1], shapes, np.ones(300))
+    found, covariance, _ = heights(3 * shapes[0] + 5 * shapes[1], shapes, np.ones(300))
     np.testing.assert_allclose(found, [3, 5], rtol=1e-9)
     # of noise of sigma 1, the heights' covariance as least squares has it
     np.testing.assert_allclose(covariance, np.linalg.inv(shapes @ shapes.T), rtol=1e-9)
     # none below 0; and a prior holds them
     assert heights(-shapes[0], shapes, np.ones(300))[0].min() == 0
-    held, _ = heights(3 * shapes[0] + 5 * shapes[1], shapes, np.ones(300), prior=[4, 4], strength=1e9)
+    held, _, _ = heights(3 * shapes[0] + 5 * shapes[1], shapes, np.ones(300), prior=[4, 4], strength=1e9)
     np.testing.assert_allclose(held, [4, 4], atol=1e-3)
+
+
+def test_heights_come_through_a_baseline_off_by_an_offset_and_a_tilt_under_each_cluster():
+    x = np.arange(600, dtype=float)
+    shapes = np.array([_gauss(x, 140, 20), _gauss(x, 160, 20), _gauss(x, 450, 30)])
+    candidates = [{"apex": c, "left": w, "right": w} for c, w in ((140, 20.0), (160, 20.0), (450, 25.0))]
+    spans = clusters(candidates, 600)
+    assert spans == [(60.0, 240.0), (350.0, 550.0)]
+    off = corrections(spans, 600).T @ [5.0, 2.0, -3.0, 1.0]
+    found, covariance, amounts = heights([3, 5, 2] @ shapes + off, shapes, np.ones(600), free=corrections(spans, 600))
+    np.testing.assert_allclose(found, [3, 5, 2], rtol=1e-9)
+    np.testing.assert_allclose(amounts, [5, 2, -3, 1], rtol=1e-9)
+    # less told of the heights, so more uncertain, than of a baseline known
+    assert (np.diag(covariance) > np.diag(heights([3, 5, 2] @ shapes, shapes, np.ones(600))[1])).all()
 
 
 @pytest.mark.parametrize("tau", [0.0, 2.0, -2.0, 15.0])

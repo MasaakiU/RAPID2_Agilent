@@ -5,9 +5,11 @@
 - emg: a sum of EMGs and a straight baseline, fitted unweighted to each cluster of candidates: the classical way
 - app: the app's ranges and areas (services/peak_detection._peaks_at, services/quantification.quantify), copied
   here, as this folder does not depend on the app
+- model: the later stage trained (train_deconvolution.py), its candidates of realness from --real taken
 
     python evaluate_deconvolution.py --method truth --count 2000 --out truth.json
     python evaluate_deconvolution.py --method emg --candidates perturbed --count 300 --out emg.json
+    python evaluate_deconvolution.py --method model --checkpoint runs/deconvolution/best.pt --candidates perturbed
 """
 
 import argparse
@@ -49,7 +51,7 @@ def truth(window, _candidates=None) -> list[dict]:
             rest = rest + full(peak, length)
     shapes = np.array([full(peak, length) / peak.profile.max() for peak in peaks]).reshape(len(peaks), length)
     weights = np.where(measured(window), 1 / np.maximum(window["sigma"], 1e-12) ** 2, 0.0)
-    found, covariance = heights(window["signal"] - rest, shapes, weights)
+    found, covariance, _ = heights(window["signal"] - rest, shapes, weights)
     sums = np.where(valid, shapes, 0.0).sum(axis=1)
     return [{"apex": peak.apex, "confidence": 1.0, "area": float(a * total),
              "sigma": float(np.sqrt(max(covariance[k, k], 0.0)) * total) or None, "shape": a * shape}
@@ -176,25 +178,57 @@ def app(window, candidates) -> list[dict]:
     return [{"apex": c["apex"], "confidence": c["confidence"], "area": area_of.get(id(c), 0.0)} for c in candidates]
 
 
+### the later stage trained ###
+def trained(checkpoint: str, device: str = "cpu", real: float | None = None, strength: float | None = None):
+    """The later stage of a checkpoint as a method (the candidates it takes), and the real and strength it takes them
+    of: those it was checked with in training, unless given."""
+    import torch
+
+    from deconvolve_models import deconvolve, load
+
+    model = load(checkpoint, device)
+    config = torch.load(checkpoint, map_location="cpu", weights_only=False)["config"]
+    real = config["real"] if real is None else real
+    strength = config["strength"] if strength is None else strength
+
+    def method(window, candidates) -> list[dict]:
+        found = deconvolve(model, window["signal"], window["missing"], window["valid"], candidates, device, real,
+                           strength)
+        return [peak for peak in found["peaks"] if peak["real"]]
+
+    return method, real, strength
+
+
 METHODS = {"truth": truth, "emg": fit_emg, "app": app}
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--method", required=True, choices=METHODS)
+    parser.add_argument("--method", required=True, choices=(*METHODS, "model"))
     parser.add_argument("--candidates", default="oracle", choices=("oracle", "perturbed"),
                         help="the true peaks' (truth always), or as the front's are off (deconvolve.CandidateErrors)")
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--length", type=int, default=2048)
+    parser.add_argument("--checkpoint", help="of the model (train_deconvolution.py)")
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--real", type=float, help="of the model: the realness from which a candidate is taken")
+    parser.add_argument("--strength", type=float, help="of the model: the heights' pull to the network's")
     parser.add_argument("--out")
     args = parser.parse_args(argv)
+    if args.method == "model" and not args.checkpoint:
+        parser.error("--method model needs --checkpoint")
+    method = METHODS.get(args.method)
+    if args.method == "model":
+        method, args.real, args.strength = trained(args.checkpoint, args.device, args.real, args.strength)
     started, scores = time.time(), Scores()
     for window, rng in windows(args.count, args.length):
         candidates = perturbed_candidates(window, rng) if args.candidates == "perturbed" else oracle_candidates(window)
-        scores.add(window, METHODS[args.method](window, candidates))
+        scores.add(window, method(window, candidates))
     summary = {"method": args.method, "candidates": "oracle" if args.method == "truth" else args.candidates,
                "windows": args.count, "length": args.length, "simulator_version": VERSION,
                "seconds": round(time.time() - started, 1)} | scores.summary()
+    if args.method == "model":
+        summary |= {"checkpoint": args.checkpoint, "real": args.real, "strength": args.strength}
     print(json.dumps(summary, indent=1))
     if args.out:
         Path(args.out).write_text(json.dumps(summary, indent=1))

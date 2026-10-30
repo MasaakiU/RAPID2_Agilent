@@ -17,6 +17,8 @@ LEVEL = 0.05  # of a shape's top, where its range ends: its 5 % widths
 RS_EDGES = (0.25, 0.5, 1.0, 1.5)  # of the separation from the nearest peak (SPEC.md 2); isolated from the last on
 RATIO_EDGES = (0.1, 1.0, 10.0)  # of the nearest peak's height to the peak's
 SNR_EDGES = (20.0, 100.0)
+ZERO_RUN = 4  # exact 0s in a row, of a part not measured (SPEC.md 3.6); fewer, of a signal cut at 0
+REACH = 4.0  # of a candidate's 5 % widths each side, its span: where the baseline is corrected about it
 
 
 def whole(sample) -> dict:
@@ -41,6 +43,23 @@ def full(peak, length: int) -> np.ndarray:
 def measured(window) -> np.ndarray:
     """The points that tell of the signal: in the window, not missing, and not in a part of 0s."""
     return window["valid"] & ~window["missing"] & (window["sigma"] > 0)
+
+
+def weighed(signal, missing, valid) -> np.ndarray:
+    """The points that tell of the heights, as the signal alone shows them: in the window, measured, and not 0 (of a
+    part not measured, or of a signal cut at 0, which tells only that it is no more)."""
+    return valid & ~missing & (signal != 0)
+
+
+def present(signal, missing, valid) -> np.ndarray:
+    """The points where a peak may be: in the window, and not in a run of ZERO_RUN or more 0s (a part not measured)."""
+    zero = np.concatenate([[False], (signal == 0) & ~missing, [False]])
+    edges = np.flatnonzero(np.diff(zero.astype(np.int8)))
+    out = valid.copy()
+    for first, end in zip(edges[::2], edges[1::2]):
+        if end - first >= ZERO_RUN:
+            out[first:end] = False
+    return out
 
 
 ### candidates ###
@@ -88,24 +107,64 @@ def perturbed_candidates(window, rng: np.random.Generator, errors: CandidateErro
 
 
 ### heights ###
-def heights(residual, shapes, weights, prior=None, strength: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+def clusters(candidates, length: int, reach: float = REACH) -> list[tuple[float, float]]:
+    """The spans of the clusters of candidates, of those whose spans (reach times their widths each side) overlap:
+    from the first's start to the last's end, within the window's length points."""
+    spans = sorted((c["apex"] - reach * max(c["left"], 0.5), c["apex"] + reach * max(c["right"], 0.5))
+                   for c in candidates)
+    out = []
+    for low, high in spans:
+        if out and low <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], high)
+        else:
+            out.append([low, high])
+    return [(max(low, 0.0), min(high, length - 1.0)) for low, high in out]
+
+
+def corrections(spans, length: int) -> np.ndarray:
+    """(2 x spans, length): of each span, 1 in it, and a line through 0 at its middle and 1 at its end; 0 outside.
+    The baseline's corrections about the peaks, fitted with their heights: of the errors of a baseline given, an
+    offset and a tilt under each cluster, as a baseline is drawn between a cluster's ends."""
+    t = np.arange(length)
+    out = np.zeros((2 * len(spans), length))
+    for i, (low, high) in enumerate(spans):
+        inside = (t >= low) & (t <= high)
+        out[2 * i] = inside
+        out[2 * i + 1] = inside * (t - (low + high) / 2) / max((high - low) / 2, 1.0)
+    return out
+
+
+def heights(residual, shapes, weights, prior=None, strength: float = 0.0,
+            free=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The heights a >= 0 of shapes (K x N, each of top 1) that make up residual (N) best, by least squares weighted
-    by weights (1/sigma², 0 where nothing is told), and their covariance (of those not held at 0, of noise as sigma
-    has it). With prior (K), strength x (a - prior)² each besides, which holds shapes too alike to be told apart."""
+    by weights (1/sigma², 0 where nothing is told), their covariance (of those not held at 0, of noise as sigma has
+    it), and the amounts of free (M x N, of any sign: the baseline's corrections) fitted with them. With prior (K),
+    strength x (a_k - prior_k)² x (what the data tell of a_k alone, the weighted sum of shape k's squares) each
+    besides: of a strength well below 1, little against the data of a shape apart from the rest, and what holds the
+    shapes too alike to be told apart. Of free, the heights of what free cannot make of the residual, and free's of
+    the rest."""
     count = len(shapes)
-    if count == 0:
-        return np.zeros(0), np.zeros((0, 0))
     root = np.sqrt(weights)
-    design, target = (np.asarray(shapes, dtype=np.float64) * root).T, np.asarray(residual, dtype=np.float64) * root
-    if prior is not None and strength > 0:
-        design = np.vstack([design, np.sqrt(strength) * np.eye(count)])
-        target = np.concatenate([target, np.sqrt(strength) * np.asarray(prior, dtype=np.float64)])
-    found, _ = nnls(design, target, maxiter=50 * count)
-    free = found > 0
-    covariance = np.zeros((count, count))
-    if free.any():
-        covariance[np.ix_(free, free)] = np.linalg.pinv(design[:, free].T @ design[:, free])
-    return found, covariance
+    design = (np.asarray(shapes, dtype=np.float64) * root).T.reshape(len(root), count)
+    target = np.asarray(residual, dtype=np.float64) * root
+    basis = np.zeros((len(root), 0)) if free is None else (np.asarray(free, dtype=np.float64) * root).T
+    told_design, told_target = design, target
+    if basis.shape[1]:
+        u, singular, _ = np.linalg.svd(basis, full_matrices=False)
+        q = u[:, singular > 1e-10 * singular.max()] if singular.max() > 0 else u[:, :0]
+        told_design, told_target = design - q @ (q.T @ design), target - q @ (q.T @ target)
+    found, covariance = np.zeros(count), np.zeros((count, count))
+    if count:
+        if prior is not None and strength > 0:
+            own = np.sqrt(strength * (design ** 2).sum(axis=0))
+            told_design = np.vstack([told_design, np.diag(own)])
+            told_target = np.concatenate([told_target, own * np.asarray(prior, dtype=np.float64)])
+        found, _ = nnls(told_design, told_target, maxiter=50 * count)
+        kept = found > 0
+        if kept.any():
+            covariance[np.ix_(kept, kept)] = np.linalg.pinv(told_design[:, kept].T @ told_design[:, kept])
+    amounts = np.linalg.lstsq(basis, target - design @ found, rcond=None)[0] if basis.shape[1] else np.zeros(0)
+    return found, covariance, amounts
 
 
 ### scores ###
