@@ -11,7 +11,7 @@ torch = pytest.importorskip("torch")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from data import cut, make_item, validation_set  # noqa: E402
 from decode import average_precision, decode, match  # noqa: E402
-from features import features  # noqa: E402
+from features import features, noise_level  # noqa: E402
 from losses import losses  # noqa: E402
 from models import build  # noqa: E402
 from simulator import Config, Peak, simulate  # noqa: E402
@@ -94,6 +94,20 @@ def test_the_clean_channels_are_of_the_noisy_ones_scaling():
     assert x.shape == (3, 500) and x.dtype == np.float32
     assert np.abs(x[0] - clean_x[0]).max() < 0.1
     assert x[0].max() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_noise_of_a_signal_mostly_0_is_of_all_its_differences():
+    rng = np.random.default_rng(0)
+    signal = np.zeros(2048, dtype=np.float32)
+    signal[:1100] = (1e-38 * np.exp(-np.arange(1100) / 200)).astype(np.float32)  # a burst's tail, of float32's least
+    signal[1100:1400] = np.maximum(rng.normal(0, 3, 300), 0)  # cut at 0
+    differences = np.diff(signal.astype(np.float64))
+    assert 0 < 1.4826 * np.median(np.abs(differences - np.median(differences))) < 1e-30  # of the median: next to 0
+    assert noise_level(signal) == pytest.approx(np.std(differences) / np.sqrt(2))
+    x, scaling = features(signal)
+    assert np.float32(scaling.noise / scaling.top) > 0 and np.isfinite(x).all() and np.abs(x).max() <= 1.5
+    noisy = rng.normal(0, 2, 2048) + 1000 * np.exp(-0.5 * ((np.arange(2048) - 900) / 10) ** 2)
+    assert noise_level(noisy) == pytest.approx(2, rel=0.1)  # of a signal not so, of the median as it was
 
 
 @pytest.mark.parametrize("name", ["transformer", "unet", "kensert"])

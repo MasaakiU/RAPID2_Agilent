@@ -33,8 +33,11 @@ def noise_level(signal: np.ndarray, missing: np.ndarray | None = None) -> float:
         return 1.0
     differences = np.diff(values)
     sigma = 1.4826 * np.median(np.abs(differences - np.median(differences))) / np.sqrt(2)
-    if sigma <= 0:
-        sigma = np.std(differences) / np.sqrt(2)
+    spread = np.std(differences) / np.sqrt(2)
+    # of a signal mostly of one value (cut at 0), of most differences 0, the median's is 0, or as near as a simulated
+    # burst's tail of 1e-41 makes it (a noise of 1.7e-41, and 0 over the top in float32): the spread of all of them
+    if sigma <= 1e-9 * spread:
+        sigma = spread
     return float(sigma) if sigma > 0 else 1.0
 
 

@@ -31,7 +31,7 @@ Python 3.11 以上と、`requirements.txt` のパッケージ（torch は CUDA �
 
 ```sh
 pip install -r requirements.txt
-python -m pytest -q          # 63 件、CPU で 30 秒ほど
+python -m pytest -q          # 64 件、CPU で 30 秒ほど
 ```
 
 ## 学習
