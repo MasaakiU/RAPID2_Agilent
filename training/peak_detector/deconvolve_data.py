@@ -1,6 +1,7 @@
 """The later stage's training data (SPEC_deconvolution.md 2, 4), made as it is used: windows of simulated samples
-(data.cut), candidates off as the front's are (deconvolve.perturbed_candidates), the input channels (features.py),
-and the targets of each candidate and of the window. torch only for the dataset.
+(data.cut), the candidates the front gives of them (Front; in some, worse, deconvolve.roughened), the input channels
+(features.py), and the targets of each candidate and of the window. Without a front, candidates made of the peaks as
+off as a front's (deconvolve.perturbed_candidates).
 
 Heights, areas, the baseline, the others and the noise are in the linear channel's units: less the window's
 baseline (features.Scaling) and over its top.
@@ -35,9 +36,10 @@ import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
 from data import cut
-from decode import assign
-from deconvolve import CandidateErrors, clusters, full, perturbed_candidates, present, shaped, weighed
+from decode import assign, decode
+from deconvolve import CandidateErrors, clusters, full, perturbed_candidates, present, roughened, shaped, weighed
 from features import features, scaling_of
+from models import build as build_front
 from simulator import Config, simulate
 
 VALIDATION_SEED = 1_000_007  # apart from the front's (data.py) and the references' (evaluate_deconvolution.py)
@@ -45,15 +47,42 @@ CANDIDATE_KEYS = ("apex", "confidence", "left", "right")
 PER_CANDIDATE = ("candidates", "real", "real_weight", "matched", "height", "area")
 
 
+class Front:
+    """The front of a checkpoint of train.py, as it gives the later stage its candidates: its apexes of a window's
+    input channels (inputs' x, as the front's training makes them, data.py), from decode's threshold, in the window."""
+
+    def __init__(self, checkpoint: str, device="cpu"):
+        self.checkpoint, self.device, self.model = checkpoint, device, None
+
+    def __getstate__(self):
+        return self.__dict__ | {"model": None}  # to a worker, the checkpoint only, which it loads of its own
+
+    def __call__(self, x: np.ndarray, length: int) -> list[dict]:
+        if self.model is None:
+            saved = torch.load(self.checkpoint, map_location="cpu", weights_only=False)
+            self.model = build_front(saved["config"]["model"], **saved["config"]["model_options"])
+            self.model.load_state_dict(saved["model"])
+            self.model = self.model.to(self.device).eval()
+        with torch.no_grad():
+            out = self.model(torch.from_numpy(x)[None].to(self.device))
+        heat = torch.sigmoid(out["heat"][0].float()).cpu().numpy()
+        return decode(heat, out["offset"][0].float().cpu().numpy(), out["log_widths"][0].float().cpu().numpy(),
+                      self.model.stride, length=length)
+
+
+def table(candidates) -> np.ndarray:
+    """Candidates as the model takes them: (K, 4) of CANDIDATE_KEYS."""
+    return np.array([[c[key] for key in CANDIDATE_KEYS] for c in candidates], dtype=np.float32).reshape(-1, 4)
+
+
 def inputs(signal, missing, valid, candidates) -> dict:
     """The arrays the model takes of a window (valid True in it) and its candidates."""
     signal, missing, valid = np.asarray(signal), np.asarray(missing, dtype=bool), np.asarray(valid, dtype=bool)
     scaling = scaling_of(signal[valid], missing[valid])
     x, _ = features(signal, missing, scaling)
-    table = np.array([[c[key] for key in CANDIDATE_KEYS] for c in candidates], dtype=np.float32).reshape(-1, 4)
     return {"x": x, "weighed": weighed(signal, missing, valid).astype(np.float32),
             "present": present(signal, missing, valid).astype(np.float32), "valid": valid.astype(np.float32),
-            "scaling": np.array([scaling.baseline, scaling.top, scaling.noise]), "candidates": table}
+            "scaling": np.array([scaling.baseline, scaling.top, scaling.noise]), "candidates": table(candidates)}
 
 
 def targets(window, candidates, scaling) -> dict:
@@ -88,17 +117,27 @@ def targets(window, candidates, scaling) -> dict:
             others = others + full(peak, length)
     sigma = window["sigma"].astype(np.float64)
     spans = clusters([c for c, matched in zip(candidates, out["matched"]) if matched], int(valid.sum()))
-    return out | {"spans": np.array(spans, dtype=np.float32).reshape(-1, 2),"baseline": ((window["baseline"] - baseline) / top).astype(np.float32),
+    return out | {"spans": np.array(spans, dtype=np.float32).reshape(-1, 2),
+                  "baseline": ((window["baseline"] - baseline) / top).astype(np.float32),
                   "others": (others / top).astype(np.float32), "sigma": (sigma / top).astype(np.float32),
                   "sigma_mask": (valid & (sigma > 0)).astype(np.float32)}
 
 
-def make_item(sample, length: int, rng: np.random.Generator,
-              errors: CandidateErrors = CandidateErrors()) -> tuple[dict, dict, list[dict]]:
-    """The arrays of a training item, its window and its candidates, of a sample."""
+def make_item(sample, length: int, rng: np.random.Generator, errors: CandidateErrors = CandidateErrors(),
+              front: Front | None = None, rough: float = 0.0) -> tuple[dict, dict, list[dict]]:
+    """The arrays of a training item, its window and its candidates, of a sample: the front's candidates, roughened by
+    errors in rough of the windows; without a front, those of perturbed_candidates."""
     window = cut(sample, length, rng)
-    candidates = perturbed_candidates(window, rng, errors)
-    item = inputs(window["signal"], window["missing"], window["valid"], candidates)
+    if front is None:
+        candidates = perturbed_candidates(window, rng, errors)
+        item = inputs(window["signal"], window["missing"], window["valid"], candidates)
+    else:
+        item = inputs(window["signal"], window["missing"], window["valid"], [])
+        count = int(window["valid"].sum())
+        candidates = front(item["x"], count)
+        if rng.random() < rough:
+            candidates = roughened(candidates, count, rng, errors)
+        item["candidates"] = table(candidates)
     return item | targets(window, candidates, item["scaling"]), window, candidates
 
 
@@ -122,24 +161,28 @@ def collate(items: list[dict]) -> dict[str, torch.Tensor]:
 
 
 class SimulatedWindows(IterableDataset):
-    """Items made without end, each worker of its own random numbers (seed, worker)."""
+    """Items made without end, each worker of its own random numbers (seed, worker), and of its own front on the CPU,
+    of a thread (unet v5: some 20 ms a window of 2048 points)."""
 
     def __init__(self, length: int, seed: int = 0, config: Config = Config(),
-                 errors: CandidateErrors = CandidateErrors()):
+                 errors: CandidateErrors = CandidateErrors(), front: Front | None = None, rough: float = 0.0):
         self.length, self.seed, self.config, self.errors = length, seed, config, errors
+        self.front, self.rough = front, rough
 
     def __iter__(self):
         info = get_worker_info()
+        if info is not None:
+            torch.set_num_threads(1)
         rng = np.random.default_rng([self.seed, 0 if info is None else info.id])
         while True:
-            yield make_item(simulate(rng, self.config), self.length, rng, self.errors)[0]
+            yield make_item(simulate(rng, self.config), self.length, rng, self.errors, self.front, self.rough)[0]
 
 
-def validation_set(count: int, length: int, config: Config = Config(),
-                   errors: CandidateErrors = CandidateErrors()) -> list[tuple[dict, dict, list[dict]]]:
-    """The same items every time: (arrays, window, candidates) each."""
+def validation_set(count: int, length: int, config: Config = Config(), errors: CandidateErrors = CandidateErrors(),
+                   front: Front | None = None) -> list[tuple[dict, dict, list[dict]]]:
+    """The same items every time: (arrays, window, candidates) each; the front's candidates as they are."""
     out = []
     for i in range(count):
         rng = np.random.default_rng([VALIDATION_SEED, i])
-        out.append(make_item(simulate(rng, config), length, rng, errors))
+        out.append(make_item(simulate(rng, config), length, rng, errors, front))
     return out

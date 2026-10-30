@@ -19,6 +19,9 @@ RATIO_EDGES = (0.1, 1.0, 10.0)  # of the nearest peak's height to the peak's
 SNR_EDGES = (20.0, 100.0)
 ZERO_RUN = 4  # exact 0s in a row, of a part not measured (SPEC.md 3.6); fewer, of a signal cut at 0
 REACH = 4.0  # of a candidate's 5 % widths each side, its span: where the baseline is corrected about it
+# confidences of the candidates roughened() adds: of the front's candidates on nothing, 95 % are below 0.2 (unet v5, on
+# the simulated windows, from decode's threshold of 0.05)
+ADDED = (0.05, 0.3)
 
 
 def whole(sample) -> dict:
@@ -82,27 +85,44 @@ class CandidateErrors:
 def perturbed_candidates(window, rng: np.random.Generator, errors: CandidateErrors = CandidateErrors()) -> list[dict]:
     """Candidates as the front gives them: of the peaks with a shape, some missed, the rest shifted and their widths
     off, some with a second on the top or a side; and some on nothing. Those found less confident."""
-    length = int(window["valid"].sum())
+    tops = [(peak.apex, peak.fwhm, peak.left, peak.right, None) for peak in shaped(window)]
+    return _made_off(tops, int(window["valid"].sum()), rng, errors, lambda _own: rng.uniform(0.3, 1.0),
+                     lambda high: rng.uniform(0.05, high))
+
+
+def roughened(candidates, length: int, rng: np.random.Generator,
+              errors: CandidateErrors = CandidateErrors()) -> list[dict]:
+    """The front's candidates of a window of length points, worse, as on data unlike those it learned of: some left
+    out, the rest shifted and their widths off, some with a second on the top or a side; and some on nothing. Those
+    added of confidences as low as the front gives those on nothing (ADDED); the rest of their own."""
+    # of a Gaussian, the 5 % widths 2.45 sigmas each side, the FWHM 2.35
+    tops = [(c["apex"], 0.48 * (c["left"] + c["right"]), c["left"], c["right"], c["confidence"]) for c in candidates]
+    return _made_off(tops, length, rng, errors, lambda own: own,
+                     lambda _high: float(np.exp(rng.uniform(np.log(ADDED[0]), np.log(ADDED[1])))))
+
+
+def _made_off(tops, length: int, rng, errors: CandidateErrors, kept, added) -> list[dict]:
+    """Candidates of tops (apex, FWHM, left and right widths, and a confidence of its own or None) as errors has
+    them; kept(its own) the confidence of one kept, added(high) of one added (high: as perturbed_candidates has it)."""
     found = []
-    for peak in shaped(window):
+    for apex, fwhm, left, right, own in tops:
         if rng.random() < errors.missed:
             continue
-        shift = float(np.clip(rng.normal(0, errors.shift), -3 * errors.shift, 3 * errors.shift)) * peak.fwhm
-        left = peak.left * float(np.exp(rng.normal(0, errors.width_spread)))
-        right = peak.right * float(np.exp(rng.normal(0, errors.width_spread)))
-        found.append({"apex": peak.apex + shift, "confidence": rng.uniform(0.3, 1.0), "left": left, "right": right})
+        shift = float(np.clip(rng.normal(0, errors.shift), -3 * errors.shift, 3 * errors.shift)) * fwhm
+        left = left * float(np.exp(rng.normal(0, errors.width_spread)))
+        right = right * float(np.exp(rng.normal(0, errors.width_spread)))
+        found.append({"apex": apex + shift, "confidence": kept(own), "left": left, "right": right})
         if rng.random() < errors.top_duplicates:
-            found.append({"apex": peak.apex + rng.choice([-1, 1]) * rng.uniform(0.15, 0.5) * peak.fwhm,
-                          "confidence": rng.uniform(0.05, 0.5), "left": left, "right": right})
+            found.append({"apex": apex + rng.choice([-1, 1]) * rng.uniform(0.15, 0.5) * fwhm,
+                          "confidence": added(0.5), "left": left, "right": right})
         if rng.random() < errors.tail_duplicates:
             side = rng.choice([-1, 1])
             part = rng.uniform(0.3, 1.0)
-            found.append({"apex": peak.apex + side * rng.uniform(1.0, 2.5) * (right if side > 0 else left),
-                          "confidence": rng.uniform(0.05, 0.4), "left": part * left, "right": part * right})
+            found.append({"apex": apex + side * rng.uniform(1.0, 2.5) * (right if side > 0 else left),
+                          "confidence": added(0.4), "left": part * left, "right": part * right})
     for _ in range(rng.poisson(errors.false_rate * length)):
         width = float(np.exp(rng.uniform(np.log(2), np.log(50))))
-        found.append({"apex": rng.uniform(0, length - 1), "confidence": rng.uniform(0.05, 0.4), "left": width,
-                      "right": width})
+        found.append({"apex": rng.uniform(0, length - 1), "confidence": added(0.4), "left": width, "right": width})
     return [candidate for candidate in found if 0 <= candidate["apex"] <= length - 1]
 
 

@@ -9,7 +9,13 @@
 
     python evaluate_deconvolution.py --method truth --count 2000 --out truth.json
     python evaluate_deconvolution.py --method emg --candidates perturbed --count 300 --out emg.json
-    python evaluate_deconvolution.py --method model --checkpoint runs/deconvolution/best.pt --candidates perturbed
+    python evaluate_deconvolution.py --method emg --candidates front --front runs/unet/best.pt --confidence 0.3
+    python evaluate_deconvolution.py --method model --checkpoint runs/deconvolution/best.pt --candidates front \
+        --front runs/unet/best.pt
+
+The candidates: the true peaks' (oracle), made off as a front's (perturbed), or a front's (front, of a checkpoint of
+train.py, from decode's threshold); of them, those from --confidence only (the app takes the front's from its
+threshold; the model all, as it learned of them).
 """
 
 import argparse
@@ -205,8 +211,11 @@ METHODS = {"truth": truth, "emg": fit_emg, "app": app}
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--method", required=True, choices=(*METHODS, "model"))
-    parser.add_argument("--candidates", default="oracle", choices=("oracle", "perturbed"),
-                        help="the true peaks' (truth always), or as the front's are off (deconvolve.CandidateErrors)")
+    parser.add_argument("--candidates", default="oracle", choices=("oracle", "perturbed", "front"),
+                        help="the true peaks' (truth always), as the front's are off (deconvolve.CandidateErrors), "
+                             "or the front's (--front)")
+    parser.add_argument("--front", help="of --candidates front: a checkpoint of train.py")
+    parser.add_argument("--confidence", type=float, default=0.0, help="of the candidates, those from it only")
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--length", type=int, default=2048)
     parser.add_argument("--checkpoint", help="of the model (train_deconvolution.py)")
@@ -217,16 +226,31 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.method == "model" and not args.checkpoint:
         parser.error("--method model needs --checkpoint")
+    if args.candidates == "front" and not args.front:
+        parser.error("--candidates front needs --front")
     method = METHODS.get(args.method)
     if args.method == "model":
         method, args.real, args.strength = trained(args.checkpoint, args.device, args.real, args.strength)
+    front = None
+    if args.candidates == "front" and args.method != "truth":
+        from deconvolve_data import Front, inputs  # of torch
+
+        front = Front(args.front, args.device)
     started, scores = time.time(), Scores()
     for window, rng in windows(args.count, args.length):
-        candidates = perturbed_candidates(window, rng) if args.candidates == "perturbed" else oracle_candidates(window)
+        if front:
+            x = inputs(window["signal"], window["missing"], window["valid"], [])["x"]
+            candidates = front(x, int(window["valid"].sum()))
+        else:
+            candidates = perturbed_candidates(window, rng) if args.candidates == "perturbed" \
+                else oracle_candidates(window)
+        candidates = [c for c in candidates if c["confidence"] >= args.confidence]
         scores.add(window, method(window, candidates))
     summary = {"method": args.method, "candidates": "oracle" if args.method == "truth" else args.candidates,
                "windows": args.count, "length": args.length, "simulator_version": VERSION,
                "seconds": round(time.time() - started, 1)} | scores.summary()
+    if front:
+        summary |= {"front": args.front, "confidence": args.confidence}
     if args.method == "model":
         summary |= {"checkpoint": args.checkpoint, "real": args.real, "strength": args.strength}
     print(json.dumps(summary, indent=1))

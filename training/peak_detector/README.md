@@ -31,7 +31,7 @@ Python 3.11 以上と、`requirements.txt` のパッケージ（torch は CUDA �
 
 ```sh
 pip install -r requirements.txt
-python -m pytest -q          # 60 件、CPU で 30 秒ほど
+python -m pytest -q          # 63 件、CPU で 30 秒ほど
 ```
 
 ## 学習
@@ -96,21 +96,28 @@ python make_examples.py --count 100 --out examples
 python evaluate_deconvolution.py --method truth --count 2000 --out truth.json   # 正解の形での最小二乗（ノイズだけの誤差）
 python evaluate_deconvolution.py --method emg --candidates perturbed --count 300 --out emg.json
 python evaluate_deconvolution.py --method app --count 300 --out app.json
+python evaluate_deconvolution.py --method emg --candidates front --front runs/2026-10-29_unet_v5_200k/best.pt \
+    --confidence 0.3 --count 300 --out emg_unet_v5.json   # 前段の候補の、確信度 0.3 以上で
 ```
 
-- `--candidates`：`oracle` は正解の頂点と幅、`perturbed` は前段の誤り（見落とし、ずれ、重複、何も無いところ）をまねたもの（`deconvolve.CandidateErrors`、前段の実際の出力で合わせる）。`truth` は、いつも正解のピークごと。
+- `--candidates`：`oracle` は正解の頂点と幅、`perturbed` は前段の誤り（見落とし、ずれ、重複、何も無いところ）をまねたもの（`deconvolve.CandidateErrors`）、`front` は `--front` の前段（`train.py` の checkpoint）が実際に出したもの（しきい値 0.05 から）。`truth` は、いつも正解のピークごと。
+- `--confidence`：候補のうち、この確信度以上のものだけを使う（アプリのやり方は、前段の頂点をしきい値で切って使う）。
 - `emg` は、1 窓に 1〜4 秒ほどかかる。
 
 ## 後段の学習
 
-前段の学習と同じく、合成データをその場で作りながら学習する。窓（`data.cut`）に、前段の誤りをまねた候補（`deconvolve.perturbed_candidates`）を付けて入れる。前段とは候補の一覧だけでつながり、前段を学習し直しても、後段は学習し直さずに済む。
+前段の学習と同じく、合成データをその場で作りながら学習する。窓（`data.cut`）に、固定した前段（`front`、`train.py` の checkpoint）が実際に出した候補を付けて入れる。3割の窓（`rough`）では、その上に人工の誤り（`deconvolve.roughened`）を足す。前段とは候補の一覧だけでつながる。前段を学習し直したら、新しい前段の候補で評価し、悪くなっていれば続きを学習する（SPEC_deconvolution 4）。
 
 ```sh
-python train_deconvolution.py --config configs/deconvolution.json --out runs/2026-10-30_deconvolution --set workers=12
-python train_deconvolution.py --resume runs/2026-10-30_deconvolution/last.pt --out runs/2026-10-30_deconvolution
-python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_deconvolution/best.pt \
-    --candidates perturbed --count 300 --out model.json   # 比べる基準と同じ 300 窓で
+python train_deconvolution.py --config configs/deconvolution.json --out runs/2026-10-30_deconv_v6_100k_unet_v5 \
+    --set front=runs/2026-10-29_unet_v5_200k/best.pt workers=14
+python train_deconvolution.py --resume runs/2026-10-30_deconv_v6_100k_unet_v5/last.pt --out runs/2026-10-30_deconv_v6_100k_unet_v5
+python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_deconv_v6_100k_unet_v5/best.pt \
+    --candidates front --front runs/2026-10-29_unet_v5_200k/best.pt --count 300 --out model.json   # 基準と同じ 300 窓で
 ```
+
+- `--set` は1つにまとめる（`--set front=... workers=14`。2つ書くと後のものだけになる）。
+- `front` を付けないと、正解の頂点に誤りを足した人工の候補（`deconvolve.perturbed_candidates`）で学習する。前段の候補と違いすぎるので、試しとテストのためだけ。始めに出る行（`candidates of the front ...`）で確かめられる。
 
 - 出力は前段と同じ（`config.json`、`metrics.jsonl`、`last.pt`、`best.pt`）。`metrics.jsonl` の `skipped` は、勾配が有限でなく飛ばしたステップの数（ずっと 0 のはず。増えていたら知らせてほしい）。
 - 検証（`eval_every` ごと、既定 2000 窓）は、使うときと同じ道筋で行う。本物らしさが `real`（既定 0.5）以上の候補を取り、高さを `scipy` の非負の最小二乗で出す。
@@ -123,7 +130,7 @@ python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_dec
 - 検証の窓の乱数（`deconvolve_data.VALIDATION_SEED`）は、比べる基準の窓（`evaluate_deconvolution.SEED`）とも、前段の検証とも別。
 - 損失の重み（`loss_weights`）、引き寄せの強さ（`strength`）、本物らしさのしきい値（`real`）は、最初の当て推量。学習の結果を見て決める（SPEC_deconvolution 6）。
 - `evaluate_deconvolution.py --method model` の `--real` と `--strength` で、学習し直さずに、取る候補と引き寄せの強さを変えて比べられる。
-- 速さ：エンコーダは前段の `transformer` と同じ。1 窓あたり、データ作りは 6 ms ほど（Apple M 系の CPU 1 コア）。バッチ 32 なら、`workers=12` で GPU が待つことはないはず。
+- 速さ：エンコーダは前段の `transformer` と同じ。1 窓あたり、データ作りは前段（unet v5）を走らせるのと合わせて 34 ms ほど（Apple M 系の CPU 1 コア。前段だけで 20 ms）。バッチ 32 なら、`workers=14` で 1 秒に 13 バッチほど作れる。`steps_per_s` がそれに近ければ、データ作りが追いついていない。
 
 ## コードの版と、学習結果の出どころ
 

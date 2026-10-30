@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deconvolve import (CandidateErrors, clusters, corrections, heights, oracle_candidates,  # noqa: E402
-                        perturbed_candidates, score, shaped, whole)
+from deconvolve import (ADDED, CandidateErrors, clusters, corrections, heights, oracle_candidates,  # noqa: E402
+                        perturbed_candidates, roughened, score, shaped, whole)
 from evaluate_deconvolution import app, emg, fit_emg, truth  # noqa: E402
 from simulator import Config, Peak, Sample, simulate  # noqa: E402
 
@@ -118,3 +118,20 @@ def test_perturbed_candidates_miss_shift_and_add_some():
     expected = peaks * (1 - errors.missed) * (1 + errors.top_duplicates + errors.tail_duplicates) + errors.false_rate * 4000
     assert abs(np.mean(counts) - expected) < 0.15 * expected + 1
     assert all(0 <= c["apex"] <= len(window["signal"]) - 1 for c in perturbed_candidates(window, rng))
+
+
+def test_the_fronts_candidates_roughened_keep_their_confidences_and_those_added_are_low():
+    candidates = [{"apex": 100.0, "confidence": 0.9, "left": 10.0, "right": 20.0},
+                  {"apex": 300.0, "confidence": 0.12, "left": 5.0, "right": 5.0}]
+    rng = np.random.default_rng(0)
+    none = CandidateErrors(missed=0, shift=0, width_spread=0, top_duplicates=0, tail_duplicates=0, false_rate=0)
+    assert roughened(candidates, 400, rng, none) == candidates
+    doubled = roughened(candidates, 400, rng, replace(none, top_duplicates=1.0))
+    assert doubled[0::2] == candidates
+    for candidate, second in zip(candidates, doubled[1::2]):
+        fwhm = 0.48 * (candidate["left"] + candidate["right"])
+        assert 0.15 * fwhm <= abs(second["apex"] - candidate["apex"]) <= 0.5 * fwhm
+        assert ADDED[0] <= second["confidence"] <= ADDED[1]
+    assert roughened(candidates, 400, rng, replace(none, missed=1.0)) == []
+    added = roughened([], 400_000, rng, replace(none, false_rate=1e-3))
+    assert abs(len(added) - 400) < 80 and all(ADDED[0] <= c["confidence"] <= ADDED[1] for c in added)

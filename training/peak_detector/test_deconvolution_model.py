@@ -1,5 +1,7 @@
 import json
+import pickle
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -8,11 +10,12 @@ import pytest
 torch = pytest.importorskip("torch")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deconvolve import heights, present, weighed  # noqa: E402
-from deconvolve_data import PER_CANDIDATE, collate, make_item  # noqa: E402
+from data import cut  # noqa: E402
+from deconvolve import CandidateErrors, heights, present, weighed  # noqa: E402
+from deconvolve_data import PER_CANDIDATE, Front, collate, inputs, make_item, table  # noqa: E402
 from deconvolve_losses import losses, solve  # noqa: E402
 from deconvolve_models import build, deconvolve, run, unimodal  # noqa: E402
-from simulator import simulate  # noqa: E402
+from simulator import Config, simulate  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 TINY = HERE / "configs" / "deconvolution_cpu_tiny.json"
@@ -26,6 +29,25 @@ def _model(seed=0):
 def _items(count, length=512, seed=0):
     rng = np.random.default_rng(seed)
     return [make_item(simulate(rng), length, rng) for _ in range(count)]
+
+
+@pytest.fixture(scope="module")
+def front(tmp_path_factory):
+    """A front of configs/cpu_tiny.json, as a checkpoint of train.py: untrained, its heat's bias 0 (an apex at each
+    local maximum of it) and its widths' of some 50 points (of those, fewer within decode.MERGE of each other)."""
+    from models import Heads
+    from models import build as build_front
+
+    config = json.loads((HERE / "configs" / "cpu_tiny.json").read_text())
+    torch.manual_seed(0)
+    model = build_front(config["model"], **config["model_options"])
+    heads = next(module for module in model.modules() if isinstance(module, Heads))
+    with torch.no_grad():
+        heads.out.bias.copy_(torch.tensor([0.0, 0.0, 4.0, 4.0]))
+    path = tmp_path_factory.mktemp("front") / "front.pt"
+    torch.save({"model": model.state_dict(), "config": config | {"provenance": {"git_commit": "test"}}, "step": 0},
+               path)
+    return str(path)
 
 
 def test_points_of_a_part_not_measured_hold_no_peak_and_zeros_weigh_nothing():
@@ -131,6 +153,33 @@ def test_a_small_model_learns_a_batch():
     assert values["area"].item() < 0.4 * first["area"] and values["shape"].item() < 0.75 * first["shape"]
 
 
+def test_the_fronts_candidates_are_its_apexes_as_on_a_trace_and_in_the_window_only(front):
+    from evaluate_real import detect
+
+    given = Front(front)
+    rng = np.random.default_rng(1)
+    window = cut(simulate(rng, replace(Config(), length=(600, 600))), 512, rng)  # all of it in the sample
+    found = given(inputs(window["signal"], window["missing"], window["valid"], [])["x"], 512)
+    assert found and found == detect(given.model, window["signal"], window["missing"], 512, "cpu")
+    short = cut(simulate(rng, replace(Config(), length=(300, 300))), 512, rng)  # padded past 300
+    found = given(inputs(short["signal"], short["missing"], short["valid"], [])["x"], 300)
+    assert found and all(0 <= c["apex"] <= 299 for c in found)
+    assert pickle.loads(pickle.dumps(given)).model is None  # to a worker, the checkpoint only
+
+
+def test_items_take_the_fronts_candidates_and_in_some_worse(front):
+    given = Front(front)
+    sample = simulate(np.random.default_rng(2))
+    item, window, candidates = make_item(sample, 512, np.random.default_rng(3), front=given)
+    count = int(window["valid"].sum())
+    assert candidates == given(item["x"], count)
+    np.testing.assert_array_equal(item["candidates"], table(candidates))
+    assert len(item["real"]) == len(candidates) and item["matched"].any()
+    doubled = CandidateErrors(missed=0, shift=0, width_spread=0, top_duplicates=1, tail_duplicates=0, false_rate=0)
+    _item, _window, worse = make_item(sample, 512, np.random.default_rng(3), doubled, given, rough=1.0)
+    assert [c for c in worse if c in candidates] == candidates and len(candidates) < len(worse) <= 2 * len(candidates)
+
+
 def test_the_later_stage_on_a_window_gives_each_candidate_and_the_parts():
     x = np.arange(300.0)
     signal = 10 + 1000 * np.exp(-0.5 * ((x - 100) / 5) ** 2) + 300 * np.exp(-0.5 * ((x - 200) / 8) ** 2)
@@ -145,19 +194,29 @@ def test_the_later_stage_on_a_window_gives_each_candidate_and_the_parts():
         assert found[name].shape == (300,) and np.isfinite(found[name]).all()
 
 
-def test_training_checking_and_evaluating_run_through(tmp_path):
+def test_training_checking_and_evaluating_run_through(tmp_path, front):
     import evaluate_deconvolution
     import train_deconvolution
 
     assert train_deconvolution.main(["--config", str(TINY), "--out", str(tmp_path / "run"), "--device", "cpu",
-                                      "--set", "steps=4", "validation=4", "eval_every=4", "log_every=2"]) == 0
+                                      "--set", "steps=4", "validation=4", "eval_every=4", "log_every=2",
+                                      f"front={front}"]) == 0
     lines = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
     (checked,) = [line["check"] for line in lines if "check" in line]
     assert {"objective", "area log error", "false area", "real ap", "by category", "loss"} <= set(checked)
-    made = json.loads((tmp_path / "run" / "config.json").read_text())["provenance"]
+    config = json.loads((tmp_path / "run" / "config.json").read_text())
+    made = config["provenance"]
     assert made["simulator_version"] >= 6 and set(made) >= {"git_commit", "git_dirty", "started", "host"}
-    assert evaluate_deconvolution.main(["--method", "model", "--checkpoint", str(tmp_path / "run" / "last.pt"),
-                                        "--candidates", "perturbed", "--count", "3", "--length", "512",
-                                        "--out", str(tmp_path / "model.json")]) == 0
-    summary = json.loads((tmp_path / "model.json").read_text())
-    assert summary["peaks"] > 0 and summary["real"] == 0.5 and summary["strength"] == 0.01
+    assert config["front"] == front and config["front_made"] == {"step": 0, "provenance": {"git_commit": "test"}}
+    for candidates in ("front", "perturbed"):
+        assert evaluate_deconvolution.main(["--method", "model", "--checkpoint", str(tmp_path / "run" / "last.pt"),
+                                            "--candidates", candidates, "--front", front, "--count", "3",
+                                            "--length", "512", "--out", str(tmp_path / f"{candidates}.json")]) == 0
+        summary = json.loads((tmp_path / f"{candidates}.json").read_text())
+        assert summary["peaks"] > 0 and summary["real"] == 0.5 and summary["strength"] == 0.01
+    assert summary["candidates"] == "perturbed" and "front" not in summary
+    assert evaluate_deconvolution.main(["--method", "app", "--candidates", "front", "--front", front, "--count", "3",
+                                        "--length", "512", "--confidence", "0.5",
+                                        "--out", str(tmp_path / "app.json")]) == 0
+    summary = json.loads((tmp_path / "app.json").read_text())
+    assert summary["front"] == front and summary["confidence"] == 0.5

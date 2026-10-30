@@ -1,9 +1,12 @@
-"""Train the later stage (SPEC_deconvolution.md 4) on windows simulated as it goes, with candidates off as the front's
-are (deconvolve_data.py), and check it on a fixed set of them as it is to be used: the candidates of realness from
+"""Train the later stage (SPEC_deconvolution.md 4) on windows simulated as it goes, with the candidates a front gives
+of them (deconvolve_data.py), and check it on a fixed set of them as it is to be used: the candidates of realness from
 `real` taken, and their heights by least squares (deconvolve_models.estimates).
 
     python train_deconvolution.py --config configs/deconvolution.json --out runs/deconvolution
-        [--resume runs/deconvolution/last.pt] [--device cuda] [--set steps=1000 batch=16 ...]
+        [--resume runs/deconvolution/last.pt] [--device cuda] --set front=runs/unet/best.pt [steps=1000 ...]
+
+The front (a checkpoint of train.py) runs in each worker, on the CPU; in `rough` of the windows, its candidates are
+made worse (deconvolve.roughened). Without one, the candidates are made of the true peaks (perturbed_candidates).
 
 Written to --out: config.json, metrics.jsonl (a line each log and each check), last.pt and best.pt (of the least
 objective on the validation set: the mean of log(1 + |relative error|) of the peaks' areas, those missed as 1, and
@@ -25,7 +28,7 @@ from torch.utils.data import DataLoader  # noqa: E402
 
 from decode import average_precision, match  # noqa: E402
 from deconvolve import CandidateErrors, Scores  # noqa: E402
-from deconvolve_data import SimulatedWindows, collate, validation_set  # noqa: E402
+from deconvolve_data import Front, SimulatedWindows, collate, validation_set  # noqa: E402
 from deconvolve_losses import DEFAULT_WEIGHTS, losses  # noqa: E402
 from deconvolve_models import REAL, STRENGTH, build, estimates, run  # noqa: E402
 from simulator import Config  # noqa: E402
@@ -48,8 +51,10 @@ DEFAULTS = {
     "log_every": 100,
     "amp": "bf16",
     "seed": 0,
+    "front": None,  # the checkpoint of train.py whose candidates are taken; none, those of perturbed_candidates
+    "rough": 0.3,  # of the windows, those of the front's candidates made worse (deconvolve.roughened)
     "simulator": {},  # Config fields to change
-    "candidates": {},  # CandidateErrors fields to change
+    "candidates": {},  # CandidateErrors fields to change, of roughened (or perturbed_candidates)
 }
 SHOWN = ("all", "isolated", "rs 0.25-0.5", "rs 0.5-1.0", "neighbor x 10.0-", "snr -20.0")  # printed of each check
 
@@ -115,6 +120,9 @@ def main(argv=None) -> int:
         config["resumed"] = config.get("resumed", []) + [provenance() | {"step": checkpoint["step"]}]
     else:
         config["provenance"] = provenance()
+        if config["front"]:
+            made = torch.load(config["front"], map_location="cpu", weights_only=False)
+            config["front_made"] = {"step": made["step"], "provenance": made["config"].get("provenance")}
     (out / "config.json").write_text(json.dumps(config, indent=1))
     torch.manual_seed(config["seed"])
     simulator = replace(Config(), **config["simulator"])
@@ -129,12 +137,15 @@ def main(argv=None) -> int:
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         step, best = checkpoint["step"], checkpoint["best"]
-    print(f"deconvolver: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters, on {device}")
+    print(f"deconvolver: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters, on {device}; candidates "
+          + (f"of the front {config['front']}" if config["front"] else "of the true peaks, made off (no front)"))
 
-    validation = validation_set(config["validation"], config["length"], simulator, errors)
+    front = config["front"]
+    validation = validation_set(config["validation"], config["length"], simulator, errors,
+                                Front(front, device) if front else None)
     # the data go on from the step resumed at, not over again
     dataset = SimulatedWindows(config["length"], seed=config["seed"] * 1_000_000 + step, config=simulator,
-                               errors=errors)
+                               errors=errors, front=Front(front) if front else None, rough=config["rough"])
     loader = DataLoader(dataset, batch_size=config["batch"], num_workers=config["workers"], collate_fn=collate,
                         pin_memory=device.type == "cuda", persistent_workers=config["workers"] > 0)
 
