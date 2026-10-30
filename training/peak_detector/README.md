@@ -17,6 +17,8 @@
 | `evaluate_real.py` | 正解付けツールのラベルでの、実データの評価 | torch |
 | `export.py` | 重みを `.npz` に書き出す（アプリは torch なしで読む） | torch |
 | `make_examples.py` | 合成データの例と図 | numpy, scipy, matplotlib |
+| `deconvolve.py` | 後段（ピークの分離）の、モデル以外の部品：候補、形の高さの最小二乗、評価 | numpy, scipy |
+| `evaluate_deconvolution.py` | 後段の比べる基準（正解の形での最小二乗、EMG の当てはめ、アプリのやり方）の、合成データでの評価 | numpy, scipy（窓の切り出しに torch） |
 | `configs/` | 設定（`transformer.json`、`unet.json`、`kensert.json`、動作確認用の `cpu_tiny.json`） | |
 
 ## 環境
@@ -81,6 +83,19 @@ python export.py runs/transformer/best.pt transformer.npz
 ```sh
 python make_examples.py --count 100 --out examples
 ```
+
+## 後段（ピークの分離）の比べる基準
+
+仕様は [SPEC_deconvolution.md](SPEC_deconvolution.md)。合成データの同じ窓（`evaluate_deconvolution.SEED`）で、正解のピークごとの面積・形・範囲の誤差、不確かさの当たり具合、余計な候補が持った面積、見落としを、全体と内訳（隣との `Rs`、高さの比、S/N、形、サチュレーションなど）で出す。
+
+```sh
+python evaluate_deconvolution.py --method truth --count 2000 --out truth.json   # 正解の形での最小二乗（ノイズだけの誤差）
+python evaluate_deconvolution.py --method emg --candidates perturbed --count 300 --out emg.json
+python evaluate_deconvolution.py --method app --count 300 --out app.json
+```
+
+- `--candidates`：`oracle` は正解の頂点と幅、`perturbed` は前段の誤り（見落とし、ずれ、重複、何も無いところ）をまねたもの（`deconvolve.CandidateErrors`、前段の実際の出力で合わせる）。`truth` は、いつも正解のピークごと。
+- `emg` は、1 窓に 1〜4 秒ほどかかる。
 
 ## コードの版と、学習結果の出どころ
 
