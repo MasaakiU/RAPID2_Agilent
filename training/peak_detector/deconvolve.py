@@ -233,19 +233,22 @@ class Scores:
     matched as the front's apexes are (decode.assign; the peaks not scored taken as peaks here). Of each peak
     matched: the area's relative error, the shape's (the L1 of the shapes of top 1, over the true one's sum), the
     range's ends' (where the shape is down to LEVEL, in FWHMs) and the area's error over the sigma given; the peaks
-    matched by none, missed; and the areas of the estimates matched to none, over all the peaks'."""
+    matched by none, missed; and the estimates matched to none, their areas over all the peaks' and their number a
+    window."""
 
     def __init__(self):
-        self.records, self.false_area, self.true_area = [], 0.0, 0.0
+        self.records, self.false_area, self.true_area, self.false_peaks, self.windows = [], 0.0, 0.0, 0, 0
 
     def add(self, window, estimates) -> None:
         length, valid = len(window["signal"]), window["valid"]
         peaks = shaped(window)
         taken = [replace(peak, label="positive") for peak in peaks]
         matched = {}
+        self.windows += 1
         for estimate, peak, _counts in assign(estimates, taken):
             if peak is None:
                 self.false_area += max(float(estimate["area"]), 0.0)
+                self.false_peaks += 1
             else:
                 matched[id(peak)] = estimate
         for peak, as_taken in zip(peaks, taken):
@@ -272,6 +275,7 @@ class Scores:
         """In all, and by category."""
         return {"peaks": len(self.records),
                 "false area": self.false_area / self.true_area if self.true_area else 0.0,
+                "false peaks a window": self.false_peaks / self.windows if self.windows else 0.0,
                 "by category": _summaries(self.records)}
 
 
@@ -297,7 +301,9 @@ def _summaries(records) -> dict:
             errors = np.array([record["area"] for record in found])
             summary |= {"area |error| median": float(np.median(np.abs(errors))),
                         "area |error| p90": float(np.percentile(np.abs(errors), 90)),
-                        "area error median": float(np.median(errors))}
+                        "area error median": float(np.median(errors)),
+                        # of those found, given none (a >= 0 held at 0 by the least squares): as good as missed
+                        "area 0": float(np.mean(errors <= -1))}
         shapes = [record["shape"] for record in found if "shape" in record]
         if shapes:
             summary |= {"shape error median": float(np.median(shapes)),

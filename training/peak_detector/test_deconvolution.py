@@ -96,7 +96,9 @@ def test_scores_count_errors_misses_and_areas_on_nothing():
     assert every["area |error| median"] == pytest.approx(0.05, rel=1e-5)
     assert every["shape error median"] == pytest.approx(0, abs=1e-6)
     assert summary["false area"] == pytest.approx(0.5 * true_areas[1] / sum(true_areas))
+    assert summary["false peaks a window"] == 1 and every["area 0"] == 0
     assert score([(window, right[:1])])["by category"]["all"]["missed"] == pytest.approx(0.5)
+    assert score([(window, [right[0], right[1] | {"area": 0.0}])])["by category"]["all"]["area 0"] == 0.5
 
 
 def test_the_emgs_fit_two_overlapped_gaussians_and_the_app_cuts_at_the_valley():
