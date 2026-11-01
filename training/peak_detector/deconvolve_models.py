@@ -6,7 +6,10 @@ widths to 5 %, in points; candidate_mask (B, K) of those there), in the linear c
     log_height: (B, K) log of its height as the network sees it, the prior of the least squares; from the signal's
                 at its apex
     shape:      (n, N) of each candidate there (n of candidate_mask, in its order), of top 1, 0 where no peak may be
-    baseline, others, log_sigma: (B, N); the noise from the window's (features.Scaling)
+    baseline, others: (B, N); out on the log channel's scale (features.py), as fine near 0 as the noise, and back
+                to the linear one (background "log"; "linear", of the runs before it, out as they are: as fine as some
+                1e-4 of the window's top, some 17 times the noise of windows of a top 1e5 times it)
+    log_sigma:  (B, N); the noise from the window's (features.Scaling)
 
     encoder: "transformer", convolutions and a Transformer at a quarter of the length (as models.TransformerUNet), or
              "unet", convolutions only (as models.ConvUNet): features at each point, and tokens to attend to
@@ -27,13 +30,23 @@ import torch.nn.functional as F
 
 from deconvolve import clusters, corrections, heights
 from deconvolve_data import collate, inputs
-from features import CHANNELS
+from features import CHANNELS, LOG_SCALE
 from models import ConvBlock
 
 REAL = 0.5  # of the realness, from which a candidate is taken for a peak's
 STRENGTH = 0.01  # of the pull of the heights to the network's, of what the data tell of each alone (deconvolve.heights)
 BUMP = 1 / math.sqrt(2 * math.log(20))  # sd of a Gaussian down to 5 % at 1
 FLOOR = 5.0  # of the log noise below the window's (features.Scaling), the least taken in weighing the points
+BACKGROUND = "log"  # of the baseline and the others out: on the log channel's scale; "linear", as they are
+# of the baseline and the others out on the log channel's scale, the most, in the window's tops: where no loss sees
+# them (the noise not known), they went up to 1e11, and the losses' values to inf x 0
+MOST = 4.0
+
+
+def unlog(values: torch.Tensor, noise: torch.Tensor, most: float = MOST) -> torch.Tensor:
+    """Of the log channel's scale (features.py: sign(v) log1p(|v| / noise) / LOG_SCALE), v again, of |v| up to most."""
+    limit = torch.log1p(most / noise) / LOG_SCALE
+    return torch.sign(values) * noise * torch.expm1(torch.minimum(values.abs(), limit) * LOG_SCALE)
 
 
 def sinusoid(positions: torch.Tensor, channels: int) -> torch.Tensor:
@@ -139,11 +152,12 @@ ENCODERS = {"transformer": TransformerEncoder, "unet": UNetEncoder}
 class Deconvolver(nn.Module):
     def __init__(self, encoder: str = "transformer", encoder_options: dict | None = None, d_model: int = 128,
                  layers: int = 3, heads: int = 4, feedforward: int = 512, dropout: float = 0.1, grid: int = 128,
-                 reach: float = 4.0, shape_width: int = 64, shape_dilations: tuple = (1, 2, 4, 8)):
+                 reach: float = 4.0, shape_width: int = 64, shape_dilations: tuple = (1, 2, 4, 8),
+                 background: str = BACKGROUND):
         super().__init__()
         self.encoder = ENCODERS[encoder](**(encoder_options or {}))
         channels = self.encoder.channels
-        self.d_model, self.grid, self.reach = d_model, grid, reach
+        self.d_model, self.grid, self.reach, self.background = d_model, grid, reach, background
         self.tokens = nn.Linear(self.encoder.token_channels, d_model)
         self.query_features = nn.Linear(channels, d_model)
         self.query_widths = nn.Sequential(nn.Linear(3, d_model), nn.GELU(), nn.Linear(d_model, d_model))
@@ -169,10 +183,13 @@ class Deconvolver(nn.Module):
         batch, _, length = x.shape
         features, tokens = self.encoder(F.pad(x, (0, (-length) % self.encoder.multiple)))
         features = features[..., :length]
+        noise = (scaling[:, 2] / scaling[:, 1]).float()[:, None]
         with torch.autocast(x.device.type, enabled=False):  # of a baseline far from 0, finer than bf16 has it
             trace = self.trace(features.float())
-        noise = (scaling[:, 2] / scaling[:, 1]).float()[:, None]
-        out = {"baseline": trace[:, 0], "others": trace[:, 1], "log_sigma": trace[:, 2] + noise.log()}
+            baseline, others = trace[:, 0], trace[:, 1]
+            if self.background == "log":
+                baseline, others = unlog(baseline, noise), unlog(others, noise)
+        out = {"baseline": baseline, "others": others, "log_sigma": trace[:, 2] + noise.log()}
 
         count = candidates.shape[1]
         apex, confidence = candidates[..., 0], candidates[..., 1]
@@ -229,10 +246,15 @@ def build(**options) -> Deconvolver:
     return Deconvolver(**options)
 
 
+def options_of(config: dict) -> dict:
+    """The model's options of a run's config: of a run before the background's option, its linear one."""
+    return {"background": "linear"} | config["model_options"]
+
+
 def load(checkpoint: str, device="cpu") -> Deconvolver:
     """The model of a checkpoint of train_deconvolution.py, to be used."""
     saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    model = build(**saved["config"]["model_options"])
+    model = build(**options_of(saved["config"]))
     model.load_state_dict(saved["model"])
     return model.to(device).eval()
 

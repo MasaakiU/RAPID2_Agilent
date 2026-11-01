@@ -31,7 +31,7 @@ Python 3.11 以上と、`requirements.txt` のパッケージ（torch は CUDA �
 
 ```sh
 pip install -r requirements.txt
-python -m pytest -q          # 64 件、CPU で 30 秒ほど
+python -m pytest -q          # 65 件、CPU で 30 秒ほど
 ```
 
 ## 学習
@@ -129,7 +129,8 @@ python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_dec
 - `best.pt` は、`objective` が一番小さいもの。`objective` は、ピークごとの `log(1 + |面積の相対誤差|)` の平均（見落としは誤差 1）と、余計な候補が持った面積の割合の和。
 - 検証の窓の乱数（`deconvolve_data.VALIDATION_SEED`）は、比べる基準の窓（`evaluate_deconvolution.SEED`）とも、前段の検証とも別。
 - 損失の重み（`loss_weights`）、引き寄せの強さ（`strength`）、本物らしさのしきい値（`real`）は、最初の当て推量。学習の結果を見て決める（SPEC_deconvolution 6）。
-- `evaluate_deconvolution.py --method model` の `--real` と `--strength` で、学習し直さずに、取る候補と引き寄せの強さを変えて比べられる。
+- `evaluate_deconvolution.py --method model` の `--real` と `--strength` で、学習し直さずに、取る候補と引き寄せの強さを変えて比べられる（暫定は `--real 0.3 --strength 0.1`）。
+- ベースラインとその他は、入力の log チャンネルの目盛りで出す（`model_options` の `background`、既定 `"log"`）。それより前の run（`2026-10-30_deconv_v6_100k_*`）の checkpoint は、線形として読む。
 - 速さ：エンコーダは前段の `transformer` と同じ。1 窓あたり、データ作りは前段（unet v5）を走らせるのと合わせて 34 ms ほど（Apple M 系の CPU 1 コア。前段だけで 20 ms）。バッチ 32 なら、`workers=14` で 1 秒に 13 バッチほど作れる。`steps_per_s` がそれに近ければ、データ作りが追いついていない。
 
 ## コードの版と、学習結果の出どころ

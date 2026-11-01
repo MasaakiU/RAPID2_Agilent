@@ -30,7 +30,7 @@ from decode import average_precision, match  # noqa: E402
 from deconvolve import CandidateErrors, Scores  # noqa: E402
 from deconvolve_data import Front, SimulatedWindows, collate, validation_set  # noqa: E402
 from deconvolve_losses import DEFAULT_WEIGHTS, losses  # noqa: E402
-from deconvolve_models import REAL, STRENGTH, build, estimates, run  # noqa: E402
+from deconvolve_models import BACKGROUND, REAL, STRENGTH, build, estimates, options_of, run  # noqa: E402
 from simulator import Config  # noqa: E402
 
 DEFAULTS = {
@@ -120,6 +120,7 @@ def main(argv=None) -> int:
         config["resumed"] = config.get("resumed", []) + [provenance() | {"step": checkpoint["step"]}]
     else:
         config["provenance"] = provenance()
+        config["model_options"] = {"background": BACKGROUND} | config["model_options"]  # as load reads it again
         if config["front"]:
             made = torch.load(config["front"], map_location="cpu", weights_only=False)
             config["front_made"] = {"step": made["step"], "provenance": made["config"].get("provenance")}
@@ -127,7 +128,7 @@ def main(argv=None) -> int:
     torch.manual_seed(config["seed"])
     simulator = replace(Config(), **config["simulator"])
     errors = replace(CandidateErrors(), **config["candidates"])
-    model = build(**config["model_options"]).to(device)
+    model = build(**options_of(config)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: schedule(step, config))
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and config["amp"] == "fp16")

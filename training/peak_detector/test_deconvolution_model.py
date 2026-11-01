@@ -14,7 +14,8 @@ from data import cut  # noqa: E402
 from deconvolve import CandidateErrors, heights, present, weighed  # noqa: E402
 from deconvolve_data import PER_CANDIDATE, Front, collate, inputs, make_item, table  # noqa: E402
 from deconvolve_losses import losses, solve  # noqa: E402
-from deconvolve_models import build, deconvolve, run, unimodal  # noqa: E402
+from deconvolve_models import build, deconvolve, load, run, unimodal, unlog  # noqa: E402
+from features import features  # noqa: E402
 from simulator import Config, simulate  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -98,6 +99,19 @@ def test_shapes_at_first_are_down_to_5_percent_at_the_widths_given_and_on_past_t
     shape = out["shape"][0].double().numpy()
     for point, z in ((150, 0.0), (140, -1.0), (170, 1.0), (190, 2.0), (250, 5.0), (90, -6.0)):
         assert shape[point] == pytest.approx(np.exp(-3 * abs(z)), rel=1e-3)
+
+
+def test_the_background_out_on_the_log_channels_scale_comes_back_to_the_linear_one():
+    t = np.arange(400)
+    signal = 50 + 1e6 * np.exp(-0.5 * ((t - 300) / 5) ** 2) + np.random.default_rng(0).normal(0, 1, 400)
+    x, scaling = features(signal)
+    back = unlog(torch.from_numpy(x[1]).double(), torch.tensor(scaling.noise / scaling.top))
+    assert np.allclose(back.numpy(), x[0], rtol=1e-4, atol=1e-10)
+    # a step of the scale near 0 is a step of the noise's size, not of the top's
+    step = unlog(torch.tensor([1e-3]), torch.tensor(scaling.noise / scaling.top)) * scaling.top / scaling.noise
+    assert 0.01 < float(step) < 0.02
+    # and of no more than 4 times the window's top, of any out, as where no loss sees it
+    assert unlog(torch.tensor([-50.0, 50.0]), torch.tensor(0.1)).tolist() == pytest.approx([-4.0, 4.0])
 
 
 def test_heights_solved_are_those_of_least_squares_and_carry_gradients():
@@ -208,6 +222,11 @@ def test_training_checking_and_evaluating_run_through(tmp_path, front):
     made = config["provenance"]
     assert made["simulator_version"] >= 6 and set(made) >= {"git_commit", "git_dirty", "started", "host"}
     assert config["front"] == front and config["front_made"] == {"step": 0, "provenance": {"git_commit": "test"}}
+    assert config["model_options"]["background"] == "log" and load(str(tmp_path / "run" / "last.pt")).background == "log"
+    saved = torch.load(tmp_path / "run" / "last.pt", weights_only=False)
+    del saved["config"]["model_options"]["background"]  # as of a run before the option: its background linear
+    torch.save(saved, tmp_path / "before.pt")
+    assert load(str(tmp_path / "before.pt")).background == "linear"
     for candidates in ("front", "perturbed"):
         assert evaluate_deconvolution.main(["--method", "model", "--checkpoint", str(tmp_path / "run" / "last.pt"),
                                             "--candidates", candidates, "--front", front, "--count", "3",
