@@ -2,6 +2,10 @@
 
     shape:    of each candidate matched to a peak with a shape, the L1 of its shape and the peak's (both of top 1) on
               the window, over the peak's sum
+    profile:  of those, the shape at the peak's true height against the peak's profile, as the baseline's:
+              log(1 + |error| / the noise) at each point, summed over the points where the peak is above the noise
+              (profile_errors). Of a strong peak, its tails down to the noise, which make the areas of the small
+              ones next to it, and of which the L1 over its sum tells little
     real:     binary cross entropy of the realness, of the candidates scored
     height:   L1 of the log height, of those matched
     baseline, others: log(1 + |error| / the noise), where the noise is known: of what matters to the least squares,
@@ -18,8 +22,8 @@ import torch.nn.functional as F
 
 from deconvolve_models import STRENGTH, log_noise
 
-DEFAULT_WEIGHTS = {"shape": 1.0, "real": 1.0, "height": 0.1, "baseline": 0.2, "others": 0.2, "sigma": 0.1,
-                   "area": 1.0}
+DEFAULT_WEIGHTS = {"shape": 1.0, "profile": 0.1, "real": 1.0, "height": 0.1, "baseline": 0.2, "others": 0.2,
+                   "sigma": 0.1, "area": 1.0}
 ROUNDS = 4  # of solving again without those below 0
 
 
@@ -63,6 +67,16 @@ def solve(residual, shapes, weights, include, prior, strength: float = STRENGTH,
     return torch.where(keep, found, 0.0)[:, :count].clamp(min=0).float()
 
 
+def profile_errors(shape, truth, height, sigma, known) -> torch.Tensor:
+    """Of shapes (n, N) and the true ones (n, N, both of top 1), of the true heights (n) and the noise (n, N) known
+    where known (n, N): of each, log(1 + height x |shape - truth| / noise) summed over the points known, over the
+    number of them where the true profile is above the noise (at least 1)."""
+    noise = sigma.clamp(min=1e-30)
+    errors = torch.log1p(height[:, None] * (shape - truth).abs() / noise) * known
+    above = ((height[:, None] * truth > noise) & (known > 0)).sum(-1).clamp(min=1)
+    return errors.sum(-1) / above
+
+
 def masked_mean(values, mask):
     return (values * mask).sum() / mask.sum().clamp(min=1.0)
 
@@ -77,6 +91,8 @@ def losses(outputs: dict, batch: dict, weights: dict = DEFAULT_WEIGHTS, strength
     values = {}
     errors = ((shape - truth).abs() * valid[rows]).sum(-1) / truth.sum(-1).clamp(min=1e-12)
     values["shape"] = masked_mean(errors, matched[mask])
+    values["profile"] = masked_mean(profile_errors(shape.float(), truth, batch["height"][mask], batch["sigma"][rows],
+                                                   batch["sigma_mask"][rows]), matched[mask])
     real = F.binary_cross_entropy_with_logits(outputs["real"], batch["real"], reduction="none")
     values["real"] = masked_mean(real, batch["real_weight"] * mask)
     values["height"] = masked_mean((outputs["log_height"] - batch["height"].clamp(min=1e-30).log()).abs(), matched)

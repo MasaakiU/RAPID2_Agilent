@@ -14,7 +14,7 @@ from data import cut  # noqa: E402
 from deconvolve import CandidateErrors, full, heights, oracle_candidates, present, shaped, weighed  # noqa: E402
 from deconvolve_data import (PER_CANDIDATE, Front, collate, inputs, make_item, table, targets,  # noqa: E402
                              validation_set)
-from deconvolve_losses import losses, solve  # noqa: E402
+from deconvolve_losses import losses, profile_errors, solve  # noqa: E402
 from deconvolve_models import build, deconvolve, estimates, load, run, unimodal, unlog  # noqa: E402
 from features import features  # noqa: E402
 from simulator import Config, simulate  # noqa: E402
@@ -157,6 +157,23 @@ def test_heights_solved_are_those_of_least_squares_and_carry_gradients():
     assert solved([True, False, True])[1] == 0
 
 
+def test_of_a_strong_peak_an_error_in_the_tails_weighs_more_than_one_at_the_top_of_the_same_l1():
+    x = torch.arange(400.0)
+    truth = torch.exp(-0.5 * ((x - 200) / 10) ** 2)
+    at_top, in_tails = truth.clone(), truth.clone()
+    at_top[195:205] -= 0.01  # an L1 of 0.1 each
+    in_tails[[*range(100, 150), *range(250, 300)]] += 0.001
+    shapes, truths = torch.stack([at_top, in_tails]), torch.stack([truth, truth])
+    sigma, known = torch.ones(2, 400), torch.ones(2, 400)
+    strong = profile_errors(shapes, truths, torch.tensor([1e4, 1e4]), sigma, known)
+    assert strong[1] > 3 * strong[0]
+    # of a weak one, both as the L1 has them
+    weak = profile_errors(shapes, truths, torch.tensor([5.0, 5.0]), sigma, known)
+    assert abs(weak[0] - weak[1]) < 0.1 * weak.max()
+    assert profile_errors(truths, truths, torch.tensor([1e4, 1e4]), sigma, known).max() == 0
+    assert profile_errors(shapes, truths, torch.tensor([1e4, 1e4]), sigma, torch.zeros(2, 400)).max() == 0
+
+
 def test_the_model_takes_windows_of_any_candidates_and_its_losses_run_back():
     model = _model()
     items = [item for item, _window, _candidates in _items(3)]
@@ -169,7 +186,7 @@ def test_the_model_takes_windows_of_any_candidates_and_its_losses_run_back():
     torch.testing.assert_close(out["shape"].amax(-1), torch.ones(count))
     values = losses(out, batch)
     values["total"].backward()
-    assert all(torch.isfinite(value) for value in values.values())
+    assert all(torch.isfinite(value) for value in values.values()) and values["profile"] > 0
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
 
 

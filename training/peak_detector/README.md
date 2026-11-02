@@ -21,7 +21,7 @@
 | `evaluate_deconvolution.py` | 後段の比べる基準（正解の形での最小二乗、EMG の当てはめ、アプリのやり方）と、学習した後段の、合成データでの評価 | numpy, scipy（窓の切り出しとモデルに torch） |
 | `deconvolve_data.py` | 後段の学習データ（窓、誤りを足した候補、入力、候補ごとと窓の正解） | torch |
 | `deconvolve_models.py` | 後段のモデル（候補ごとの形・本物らしさ・高さ、窓のベースライン・その他・ノイズ）と、窓への後段（モデルのあとに最小二乗） | torch |
-| `deconvolve_losses.py` | 後段の損失（形、本物らしさ、高さ、ベースライン、その他、ノイズ、最小二乗で出した面積） | torch |
+| `deconvolve_losses.py` | 後段の損失（形、形の裾、本物らしさ、高さ、ベースライン、その他、ノイズ、最小二乗で出した面積） | torch |
 | `train_deconvolution.py` | 後段の学習 | torch |
 | `configs/` | 設定（前段：`transformer.json`、`unet.json`、`kensert.json`、動作確認用の `cpu_tiny.json`。後段：`deconvolution.json`、`deconvolution_unet.json`、`deconvolution_cpu_tiny.json`） | |
 
