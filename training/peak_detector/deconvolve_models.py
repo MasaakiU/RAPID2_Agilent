@@ -34,6 +34,7 @@ from features import CHANNELS, LOG_SCALE
 from models import ConvBlock
 
 REAL = 0.5  # of the realness, from which a candidate is taken for a peak's
+LOW = 0.02  # of the realness, from which one not taken is fitted too, to the others (of the signal, not a peak's)
 STRENGTH = 0.01  # of the pull of the heights to the network's, of what the data tell of each alone (deconvolve.heights)
 BUMP = 1 / math.sqrt(2 * math.log(20))  # sd of a Gaussian down to 5 % at 1
 FLOOR = 5.0  # of the log noise below the window's (features.Scaling), the least taken in weighing the points
@@ -266,13 +267,18 @@ def run(model, batch: dict, device) -> dict:
 
 
 @torch.no_grad()
-def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = STRENGTH) -> list[dict]:
+def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = STRENGTH,
+              low: float = LOW) -> list[dict]:
     """Of each window of a batch and the model's outputs of it, the later stage's: the candidates, each {"apex",
     "confidence" (its realness), "real" (taken for a peak's), and of those taken "area" and "sigma" (of the area),
     "shape" (the peak on the window's points) and "top" (the point of its top)}, the heights of their shapes by
     least squares (deconvolve.heights: weighed by the noise given, a >= 0, pulled to the network's by strength, with
     the baseline's corrections under their clusters); and the window's baseline (corrected), others, noise and
-    residual. In the signal's units."""
+    residual. In the signal's units.
+
+    The candidates of realness from low, under real, are in the least squares too, not pulled, and their fit in the
+    others: of the signal, though not a peak's. Of one left out, as the others are not trained to hold what a
+    candidate matches, its signal was in nothing fitted, or in its neighbors' areas (SPEC_deconvolution.md 5)."""
     mask = batch["candidate_mask"].numpy()
     numbers = {key: outputs[key].float().cpu().numpy().astype(np.float64)
                for key in ("real", "log_height", "shape", "baseline", "others")}
@@ -288,13 +294,18 @@ def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = 
         sigma = np.exp(numbers["log_sigma"][i])
         rest = numbers["baseline"][i] + numbers["others"][i]
         taken = np.flatnonzero(realness[i, :count] >= real)
+        added = np.flatnonzero((realness[i, :count] >= low) & (realness[i, :count] < real))
+        fitted_ones = np.concatenate([taken, added])
         spans = clusters([dict(zip(("apex", "left", "right"), candidates[i, k, [0, 2, 3]])) for k in taken],
                          int(valid[i].sum()))
         free = corrections(spans, len(rest))
-        found, covariance, amounts = heights(x[i, 0] - rest, shapes[taken], weighed[i] / np.maximum(sigma, 1e-30) ** 2,
-                                             prior=np.exp(numbers["log_height"][i, taken]), strength=strength,
+        found, covariance, amounts = heights(x[i, 0] - rest, shapes[fitted_ones],
+                                             weighed[i] / np.maximum(sigma, 1e-30) ** 2,
+                                             prior=np.exp(numbers["log_height"][i, fitted_ones]),
+                                             strength=np.where(np.arange(len(fitted_ones)) < len(taken), strength, 0.0),
                                              free=free)
         corrected = numbers["baseline"][i] + amounts @ free
+        others = numbers["others"][i] + found[len(taken):] @ shapes[added]
         sums = (shapes * valid[i]).sum(axis=1)
         peaks, fitted = [], amounts @ free
         for k in range(count):
@@ -306,18 +317,17 @@ def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = 
                          "sigma": float(np.sqrt(max(covariance[j, j], 0.0)) * sums[k] * top) or None,
                          "shape": found[j] * shapes[k] * top, "top": int(np.argmax(shapes[k]))}
             peaks.append(peak)
-        out.append({"peaks": peaks, "baseline": corrected * top + base,
-                    "others": numbers["others"][i] * top, "sigma": sigma * top,
-                    "residual": (x[i, 0] - rest - fitted) * top})
+        out.append({"peaks": peaks, "baseline": corrected * top + base, "others": others * top, "sigma": sigma * top,
+                    "residual": (x[i, 0] - numbers["baseline"][i] - others - fitted) * top})
     return out
 
 
 def deconvolve(model, signal, missing, valid, candidates, device="cpu", real: float = REAL,
-               strength: float = STRENGTH) -> dict:
+               strength: float = STRENGTH, low: float = LOW) -> dict:
     """The later stage on one window (valid True in it) and its candidates (each {"apex", "confidence", "left",
     "right"}): as estimates gives it."""
     batch = collate([inputs(signal, missing, valid, candidates)])
     model.eval()
     with torch.no_grad():
         outputs = run(model, batch, device)
-    return estimates(outputs, batch, real, strength)[0]
+    return estimates(outputs, batch, real, strength, low)[0]

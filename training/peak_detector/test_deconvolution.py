@@ -43,6 +43,9 @@ def test_heights_of_shapes_make_up_the_signal():
     assert heights(-shapes[0], shapes, np.ones(300))[0].min() == 0
     held, _, _ = heights(3 * shapes[0] + 5 * shapes[1], shapes, np.ones(300), prior=[4, 4], strength=1e9)
     np.testing.assert_allclose(held, [4, 4], atol=1e-3)
+    # of a strength each: the one of 0 free, the other held
+    held, _, _ = heights(3 * shapes[0] + 5 * shapes[1], shapes, np.ones(300), prior=[4, 4], strength=[1e9, 0])
+    assert abs(held[0] - 4) < 1e-3 and abs(held[1] - 4) > 0.1
 
 
 def test_heights_come_through_a_baseline_off_by_an_offset_and_a_tilt_under_each_cluster():

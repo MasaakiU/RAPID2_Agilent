@@ -13,8 +13,9 @@ baseline (features.Scaling) and over its top.
     scaling:     (3) the window's baseline, top and noise (features.Scaling), to the signal's units
     candidates:  (K, 4) apex, confidence, left and right widths to 5 %, in points
   the targets, the candidates matched to the peaks with a shape as deconvolve.Scores matches them:
-    real:        (K) 1 of a positive's, 0 of none's; real_weight 0 of a peak not scored's, as of one of nothing in
-                 the window
+    real:        (K) 1 of a positive's and of a peak not scored's of S/N from REAL_SNR (in the signal for sure: of
+                 a close pair the smaller, a wider one's under a narrower one, one at an end), 0 of none's;
+                 real_weight 0 of the other peaks not scored (of S/N 2-5), as of one of nothing in the window
     matched:     (K) 1 of a peak with a shape
     shape:       (K, N) its peak's profile over its top, on the window; 0 of none's
     height:      (K) its peak's top
@@ -43,6 +44,7 @@ from models import build as build_front
 from simulator import Config, simulate
 
 VALIDATION_SEED = 1_000_007  # apart from the front's (data.py) and the references' (evaluate_deconvolution.py)
+REAL_SNR = Config().snr_positive  # of a peak not scored, from which its candidate is to be taken as a positive's
 CANDIDATE_KEYS = ("apex", "confidence", "left", "right")
 PER_CANDIDATE = ("candidates", "real", "real_weight", "matched", "height", "area")
 
@@ -103,7 +105,7 @@ def targets(window, candidates, scaling) -> dict:
             continue
         k, peak = index[id(candidate)], of[id(peak)]
         profile = np.where(valid, full(peak, length), 0.0)
-        if peak.label == "positive" and profile.max() > 0:
+        if (peak.label == "positive" or peak.snr >= REAL_SNR) and profile.max() > 0:
             out["real"][k] = 1.0
         else:
             out["real_weight"][k] = 0.0
@@ -124,10 +126,13 @@ def targets(window, candidates, scaling) -> dict:
 
 
 def make_item(sample, length: int, rng: np.random.Generator, errors: CandidateErrors = CandidateErrors(),
-              front: Front | None = None, rough: float = 0.0) -> tuple[dict, dict, list[dict]]:
-    """The arrays of a training item, its window and its candidates, of a sample: the front's candidates, roughened by
-    errors in rough of the windows; without a front, those of perturbed_candidates."""
+              front: Front | list[Front] | None = None, rough: float = 0.0) -> tuple[dict, dict, list[dict]]:
+    """The arrays of a training item, its window and its candidates, of a sample: the front's candidates (of fronts,
+    one's at random), roughened by errors in rough of the windows; without a front, those of
+    perturbed_candidates."""
     window = cut(sample, length, rng)
+    if isinstance(front, list):
+        front = front[rng.integers(len(front))]
     if front is None:
         candidates = perturbed_candidates(window, rng, errors)
         item = inputs(window["signal"], window["missing"], window["valid"], candidates)
@@ -161,11 +166,12 @@ def collate(items: list[dict]) -> dict[str, torch.Tensor]:
 
 
 class SimulatedWindows(IterableDataset):
-    """Items made without end, each worker of its own random numbers (seed, worker), and of its own front on the CPU,
-    of a thread (unet v5: some 20 ms a window of 2048 points)."""
+    """Items made without end, each worker of its own random numbers (seed, worker), and of its own front (or fronts)
+    on the CPU, of a thread (unet v5: some 20 ms a window of 2048 points)."""
 
     def __init__(self, length: int, seed: int = 0, config: Config = Config(),
-                 errors: CandidateErrors = CandidateErrors(), front: Front | None = None, rough: float = 0.0):
+                 errors: CandidateErrors = CandidateErrors(), front: Front | list[Front] | None = None,
+                 rough: float = 0.0):
         self.length, self.seed, self.config, self.errors = length, seed, config, errors
         self.front, self.rough = front, rough
 
@@ -179,10 +185,12 @@ class SimulatedWindows(IterableDataset):
 
 
 def validation_set(count: int, length: int, config: Config = Config(), errors: CandidateErrors = CandidateErrors(),
-                   front: Front | None = None) -> list[tuple[dict, dict, list[dict]]]:
-    """The same items every time: (arrays, window, candidates) each; the front's candidates as they are."""
+                   front: Front | list[Front] | None = None) -> list[tuple[dict, dict, list[dict]]]:
+    """The same items every time: (arrays, window, candidates) each; the front's candidates as they are (of fronts,
+    of each in turn)."""
     out = []
     for i in range(count):
         rng = np.random.default_rng([VALIDATION_SEED, i])
-        out.append(make_item(simulate(rng, config), length, rng, errors, front))
+        given = front[i % len(front)] if isinstance(front, list) else front
+        out.append(make_item(simulate(rng, config), length, rng, errors, given))
     return out

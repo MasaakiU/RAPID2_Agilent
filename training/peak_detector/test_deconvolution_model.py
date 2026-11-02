@@ -11,10 +11,11 @@ torch = pytest.importorskip("torch")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from data import cut  # noqa: E402
-from deconvolve import CandidateErrors, heights, present, weighed  # noqa: E402
-from deconvolve_data import PER_CANDIDATE, Front, collate, inputs, make_item, table  # noqa: E402
+from deconvolve import CandidateErrors, full, heights, oracle_candidates, present, shaped, weighed  # noqa: E402
+from deconvolve_data import (PER_CANDIDATE, Front, collate, inputs, make_item, table, targets,  # noqa: E402
+                             validation_set)
 from deconvolve_losses import losses, solve  # noqa: E402
-from deconvolve_models import build, deconvolve, load, run, unimodal, unlog  # noqa: E402
+from deconvolve_models import build, deconvolve, estimates, load, run, unimodal, unlog  # noqa: E402
 from features import features  # noqa: E402
 from simulator import Config, simulate  # noqa: E402
 
@@ -73,6 +74,25 @@ def test_the_targets_make_up_the_clean_signal():
         np.testing.assert_allclose(item["shape"][matched].max(axis=1), 1.0)
         assert not item["shape"][~matched].any() and not item["real"][~matched].any()
         assert len(item["candidates"]) == len(candidates)
+
+
+def test_the_candidates_of_peaks_not_scored_are_real_of_snr_from_5_and_else_not_trained():
+    rng = np.random.default_rng(5)
+    kinds = set()
+    for _ in range(300):
+        window = cut(simulate(rng), 600, rng)
+        scaling = inputs(window["signal"], window["missing"], window["valid"], [])["scaling"]
+        out = targets(window, oracle_candidates(window), scaling)
+        for k, peak in enumerate(shaped(window)):
+            profile = np.where(window["valid"], full(peak, 600), 0.0)
+            if not out["matched"][k] or not np.allclose(out["shape"][k], profile / profile.max(), atol=1e-6):
+                continue  # of another peak's
+            kind = "positive" if peak.label == "positive" else "sure" if peak.snr >= 5 else "faint"
+            kinds.add(kind)
+            assert (out["real"][k], out["real_weight"][k]) == ((0.0, 0.0) if kind == "faint" else (1.0, 1.0))
+        if len(kinds) == 3:
+            break
+    assert kinds == {"positive", "sure", "faint"}
 
 
 def test_a_unimodal_shape_is_of_top_1_up_then_down_and_of_any_depth_each_side():
@@ -208,6 +228,34 @@ def test_the_later_stage_on_a_window_gives_each_candidate_and_the_parts():
         assert found[name].shape == (300,) and np.isfinite(found[name]).all()
 
 
+def test_a_candidate_not_taken_but_of_realness_from_low_is_fitted_to_the_others_not_a_peak():
+    x = np.arange(300.0)
+    signal = 10 + 1000 * np.exp(-0.5 * ((x - 100) / 5) ** 2) + 300 * np.exp(-0.5 * ((x - 200) / 8) ** 2)
+    candidates = [{"apex": 100.0, "confidence": 0.9, "left": 12.0, "right": 12.0},
+                  {"apex": 200.0, "confidence": 0.8, "left": 20.0, "right": 20.0}]
+    batch = collate([inputs(signal, np.zeros(300, bool), np.ones(300, bool), candidates)])
+    with torch.no_grad():
+        outputs = run(_model(), batch, "cpu")
+    outputs["real"] = torch.tensor([[3.0, -2.0]])  # realness 0.95 and 0.12
+    without, added = (estimates(outputs, batch, 0.5, 0.01, low)[0] for low in (0.5, 0.05))
+    assert [p["real"] for p in added["peaks"]] == [True, False] and "area" not in added["peaks"][1]
+    fit = added["others"] - without["others"]
+    assert fit.min() >= 0 and fit.max() > 0 and np.argmax(fit) in range(185, 216)
+    assert (added["residual"] ** 2).sum() < (without["residual"] ** 2).sum()
+    np.testing.assert_allclose(added["residual"] + added["others"] + added["baseline"]
+                               + added["peaks"][0]["shape"], signal, rtol=1e-6)
+
+
+def test_of_fronts_each_window_takes_ones_and_the_validation_set_each_in_turn():
+    def given(apex):
+        return lambda _x, _length: [{"apex": apex, "confidence": 0.5, "left": 5.0, "right": 5.0}]
+
+    fronts = [given(100.0), given(200.0)]
+    assert [c[0]["apex"] for _i, _w, c in validation_set(4, 512, front=fronts)] == [100.0, 200.0, 100.0, 200.0]
+    rng = np.random.default_rng(0)
+    assert {make_item(simulate(rng), 512, rng, front=fronts)[2][0]["apex"] for _ in range(8)} == {100.0, 200.0}
+
+
 def test_training_checking_and_evaluating_run_through(tmp_path, front):
     import evaluate_deconvolution
     import train_deconvolution
@@ -222,6 +270,11 @@ def test_training_checking_and_evaluating_run_through(tmp_path, front):
     made = config["provenance"]
     assert made["simulator_version"] >= 6 and set(made) >= {"git_commit", "git_dirty", "started", "host"}
     assert config["front"] == front and config["front_made"] == {"step": 0, "provenance": {"git_commit": "test"}}
+    assert train_deconvolution.main(["--config", str(TINY), "--out", str(tmp_path / "both"), "--device", "cpu",
+                                      "--set", "steps=2", "validation=2", "eval_every=2", "log_every=2",
+                                      f'front=["{front}", "{front}"]']) == 0
+    config = json.loads((tmp_path / "both" / "config.json").read_text())
+    assert config["front"] == [front, front] and len(config["front_made"]) == 2
     assert config["model_options"]["background"] == "log" and load(str(tmp_path / "run" / "last.pt")).background == "log"
     saved = torch.load(tmp_path / "run" / "last.pt", weights_only=False)
     del saved["config"]["model_options"]["background"]  # as of a run before the option: its background linear
@@ -233,6 +286,7 @@ def test_training_checking_and_evaluating_run_through(tmp_path, front):
                                             "--length", "512", "--out", str(tmp_path / f"{candidates}.json")]) == 0
         summary = json.loads((tmp_path / f"{candidates}.json").read_text())
         assert summary["peaks"] > 0 and summary["real"] == 0.5 and summary["strength"] == 0.01
+        assert summary["low"] == 0.02
     assert summary["candidates"] == "perturbed" and "front" not in summary
     assert evaluate_deconvolution.main(["--method", "app", "--candidates", "front", "--front", front, "--count", "3",
                                         "--length", "512", "--confidence", "0.5",

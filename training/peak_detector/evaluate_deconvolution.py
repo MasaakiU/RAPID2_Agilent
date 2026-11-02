@@ -5,7 +5,8 @@
 - emg: a sum of EMGs and a straight baseline, fitted unweighted to each cluster of candidates: the classical way
 - app: the app's ranges and areas (services/peak_detection._peaks_at, services/quantification.quantify), copied
   here, as this folder does not depend on the app
-- model: the later stage trained (train_deconvolution.py), its candidates of realness from --real taken
+- model: the later stage trained (train_deconvolution.py), its candidates of realness from --real taken (and those
+  from --low fitted to the others)
 
     python evaluate_deconvolution.py --method truth --count 2000 --out truth.json
     python evaluate_deconvolution.py --method emg --candidates perturbed --count 300 --out emg.json
@@ -185,24 +186,26 @@ def app(window, candidates) -> list[dict]:
 
 
 ### the later stage trained ###
-def trained(checkpoint: str, device: str = "cpu", real: float | None = None, strength: float | None = None):
-    """The later stage of a checkpoint as a method (the candidates it takes), and the real and strength it takes them
-    of: those it was checked with in training, unless given."""
+def trained(checkpoint: str, device: str = "cpu", real: float | None = None, strength: float | None = None,
+            low: float | None = None):
+    """The later stage of a checkpoint as a method (the candidates it takes), and the real, strength and low it takes
+    them of: those it was checked with in training (of a run before low, deconvolve_models.LOW), unless given."""
     import torch
 
-    from deconvolve_models import deconvolve, load
+    from deconvolve_models import LOW, deconvolve, load
 
     model = load(checkpoint, device)
     config = torch.load(checkpoint, map_location="cpu", weights_only=False)["config"]
     real = config["real"] if real is None else real
     strength = config["strength"] if strength is None else strength
+    low = config.get("low", LOW) if low is None else low
 
     def method(window, candidates) -> list[dict]:
         found = deconvolve(model, window["signal"], window["missing"], window["valid"], candidates, device, real,
-                           strength)
+                           strength, low)
         return [peak for peak in found["peaks"] if peak["real"]]
 
-    return method, real, strength
+    return method, real, strength, low
 
 
 METHODS = {"truth": truth, "emg": fit_emg, "app": app}
@@ -222,6 +225,8 @@ def main(argv=None) -> int:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--real", type=float, help="of the model: the realness from which a candidate is taken")
     parser.add_argument("--strength", type=float, help="of the model: the heights' pull to the network's")
+    parser.add_argument("--low", type=float, help="of the model: the realness from which one not taken is fitted to "
+                                                  "the others (from --real: none)")
     parser.add_argument("--out")
     args = parser.parse_args(argv)
     if args.method == "model" and not args.checkpoint:
@@ -230,7 +235,8 @@ def main(argv=None) -> int:
         parser.error("--candidates front needs --front")
     method = METHODS.get(args.method)
     if args.method == "model":
-        method, args.real, args.strength = trained(args.checkpoint, args.device, args.real, args.strength)
+        method, args.real, args.strength, args.low = trained(args.checkpoint, args.device, args.real, args.strength,
+                                                             args.low)
     front = None
     if args.candidates == "front" and args.method != "truth":
         from deconvolve_data import Front, inputs  # of torch
@@ -252,7 +258,7 @@ def main(argv=None) -> int:
     if front:
         summary |= {"front": args.front, "confidence": args.confidence}
     if args.method == "model":
-        summary |= {"checkpoint": args.checkpoint, "real": args.real, "strength": args.strength}
+        summary |= {"checkpoint": args.checkpoint, "real": args.real, "strength": args.strength, "low": args.low}
     print(json.dumps(summary, indent=1))
     if args.out:
         Path(args.out).write_text(json.dumps(summary, indent=1))

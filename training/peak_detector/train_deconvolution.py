@@ -1,12 +1,14 @@
 """Train the later stage (SPEC_deconvolution.md 4) on windows simulated as it goes, with the candidates a front gives
 of them (deconvolve_data.py), and check it on a fixed set of them as it is to be used: the candidates of realness from
-`real` taken, and their heights by least squares (deconvolve_models.estimates).
+`real` taken, and their heights by least squares (deconvolve_models.estimates; those from `low` fitted to the others).
 
     python train_deconvolution.py --config configs/deconvolution.json --out runs/deconvolution
         [--resume runs/deconvolution/last.pt] [--device cuda] --set front=runs/unet/best.pt [steps=1000 ...]
 
 The front (a checkpoint of train.py) runs in each worker, on the CPU; in `rough` of the windows, its candidates are
-made worse (deconvolve.roughened). Without one, the candidates are made of the true peaks (perturbed_candidates).
+made worse (deconvolve.roughened). Of a list of fronts (front=[a.pt, b.pt]), each window's candidates are of one of
+them at random, and the validation set's of each in turn. Without one, the candidates are made of the true peaks
+(perturbed_candidates).
 
 Written to --out: config.json, metrics.jsonl (a line each log and each check), last.pt and best.pt (of the least
 objective on the validation set: the mean of log(1 + |relative error|) of the peaks' areas, those missed as 1, and
@@ -30,7 +32,7 @@ from decode import average_precision, match  # noqa: E402
 from deconvolve import CandidateErrors, Scores  # noqa: E402
 from deconvolve_data import Front, SimulatedWindows, collate, validation_set  # noqa: E402
 from deconvolve_losses import DEFAULT_WEIGHTS, losses  # noqa: E402
-from deconvolve_models import BACKGROUND, REAL, STRENGTH, build, estimates, options_of, run  # noqa: E402
+from deconvolve_models import BACKGROUND, LOW, REAL, STRENGTH, build, estimates, options_of, run  # noqa: E402
 from simulator import Config  # noqa: E402
 
 DEFAULTS = {
@@ -45,13 +47,14 @@ DEFAULTS = {
     "loss_weights": DEFAULT_WEIGHTS,
     "strength": STRENGTH,
     "real": REAL,
+    "low": LOW,
     "workers": 8,
     "validation": 2_000,
     "eval_every": 5_000,
     "log_every": 100,
     "amp": "bf16",
     "seed": 0,
-    "front": None,  # the checkpoint of train.py whose candidates are taken; none, those of perturbed_candidates
+    "front": None,  # the checkpoint of train.py whose candidates are taken (or a list); none, perturbed_candidates'
     "rough": 0.3,  # of the windows, those of the front's candidates made worse (deconvolve.roughened)
     "simulator": {},  # Config fields to change
     "candidates": {},  # CandidateErrors fields to change, of roughened (or perturbed_candidates)
@@ -74,7 +77,8 @@ def check(model, validation, config: dict, device: torch.device) -> dict:
         for name, value in losses(outputs, on, config["loss_weights"], config["strength"]).items():
             totals[name] = totals.get(name, 0.0) + float(value) * len(chunk)
         for (_item, window, _candidates), found in zip(chunk, estimates(outputs, batch, config["real"],
-                                                                        config["strength"])):
+                                                                        config["strength"],
+                                                                        config.get("low", config["real"]))):
             scores.add(window, [peak for peak in found["peaks"] if peak["real"]])
             records += match(found["peaks"], window["peaks"])[0]
             positives += sum(peak.label == "positive" for peak in window["peaks"])
@@ -89,6 +93,12 @@ def check(model, validation, config: dict, device: torch.device) -> dict:
                 "real recall": true / max(positives, 1)}
     summary["loss"] = {name: value / len(validation) for name, value in totals.items()}
     return summary
+
+
+def fronts_of(config: dict) -> list[str]:
+    """The checkpoints of the fronts of a config: of front, one, a list, or none."""
+    front = config["front"]
+    return [front] if isinstance(front, str) else list(front or [])
 
 
 def shown(summary: dict) -> dict:
@@ -121,9 +131,10 @@ def main(argv=None) -> int:
     else:
         config["provenance"] = provenance()
         config["model_options"] = {"background": BACKGROUND} | config["model_options"]  # as load reads it again
-        if config["front"]:
-            made = torch.load(config["front"], map_location="cpu", weights_only=False)
-            config["front_made"] = {"step": made["step"], "provenance": made["config"].get("provenance")}
+        made = [torch.load(front, map_location="cpu", weights_only=False) for front in fronts_of(config)]
+        made = [{"step": m["step"], "provenance": m["config"].get("provenance")} for m in made]
+        if made:
+            config["front_made"] = made[0] if isinstance(config["front"], str) else made
     (out / "config.json").write_text(json.dumps(config, indent=1))
     torch.manual_seed(config["seed"])
     simulator = replace(Config(), **config["simulator"])
@@ -141,12 +152,14 @@ def main(argv=None) -> int:
     print(f"deconvolver: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters, on {device}; candidates "
           + (f"of the front {config['front']}" if config["front"] else "of the true peaks, made off (no front)"))
 
-    front = config["front"]
-    validation = validation_set(config["validation"], config["length"], simulator, errors,
-                                Front(front, device) if front else None)
+    def fronts(device="cpu"):
+        given = [Front(front, device) for front in fronts_of(config)]
+        return given[0] if isinstance(config["front"], str) else given or None
+
+    validation = validation_set(config["validation"], config["length"], simulator, errors, fronts(device))
     # the data go on from the step resumed at, not over again
     dataset = SimulatedWindows(config["length"], seed=config["seed"] * 1_000_000 + step, config=simulator,
-                               errors=errors, front=Front(front) if front else None, rough=config["rough"])
+                               errors=errors, front=fronts(), rough=config["rough"])
     loader = DataLoader(dataset, batch_size=config["batch"], num_workers=config["workers"], collate_fn=collate,
                         pin_memory=device.type == "cuda", persistent_workers=config["workers"] > 0)
 

@@ -154,15 +154,15 @@ def corrections(spans, length: int) -> np.ndarray:
     return out
 
 
-def heights(residual, shapes, weights, prior=None, strength: float = 0.0,
+def heights(residual, shapes, weights, prior=None, strength=0.0,
             free=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The heights a >= 0 of shapes (K x N, each of top 1) that make up residual (N) best, by least squares weighted
     by weights (1/sigma², 0 where nothing is told), their covariance (of those not held at 0, of noise as sigma has
     it), and the amounts of free (M x N, of any sign: the baseline's corrections) fitted with them. With prior (K),
     strength x (a_k - prior_k)² x (what the data tell of a_k alone, the weighted sum of shape k's squares) each
-    besides: of a strength well below 1, little against the data of a shape apart from the rest, and what holds the
-    shapes too alike to be told apart. Of free, the heights of what free cannot make of the residual, and free's of
-    the rest."""
+    besides (strength one for all, or one of each shape): of a strength well below 1, little against the data of a
+    shape apart from the rest, and what holds the shapes too alike to be told apart. Of free, the heights of what
+    free cannot make of the residual, and free's of the rest."""
     count = len(shapes)
     root = np.sqrt(weights)
     design = (np.asarray(shapes, dtype=np.float64) * root).T.reshape(len(root), count)
@@ -175,7 +175,8 @@ def heights(residual, shapes, weights, prior=None, strength: float = 0.0,
         told_design, told_target = design - q @ (q.T @ design), target - q @ (q.T @ target)
     found, covariance = np.zeros(count), np.zeros((count, count))
     if count:
-        if prior is not None and strength > 0:
+        strength = np.asarray(strength, dtype=np.float64)
+        if prior is not None and (strength > 0).any():
             own = np.sqrt(strength * (design ** 2).sum(axis=0))
             told_design = np.vstack([told_design, np.diag(own)])
             told_target = np.concatenate([told_target, own * np.asarray(prior, dtype=np.float64)])
