@@ -138,16 +138,19 @@ python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_dec
 
 ## ONNX への書き出し
 
-アプリは、前段と後段を onnxruntime で動かす（torch なし）。torch の書き出し（dynamo）で、CPU・float32 のまま書き出し、合成データの窓で、onnxruntime の出力・前段の候補・後段の面積が torch と同じかを確かめる。
+アプリは、前段と後段を onnxruntime で動かす（torch なし）。`torch.export` で作ったもの（strict でない）を、torch の書き出し（dynamo）で、CPU・float32 のまま ONNX にする。合成データの窓で、onnxruntime の出力・前段の候補・後段の面積が torch と同じかを確かめる。
 
 ```sh
 python export_onnx.py --front runs/2026-10-29_unet_v5_200k/best.pt \
     --later runs/2026-11-02_deconv_v6_sure_100k_unet_v5/best.pt --out runs/onnx_unet_v5 --check 50
 ```
 
-- 出力：`front.onnx`、`later.onnx`、`manifest.json`（元の checkpoint、入出力の名前、窓の長さ 2048、前段の stride、opset、確かめた結果）。最後に `as torch: yes` と出れば一致している（出力の差が 1e-2 未満、前段の候補がすべて同じ、面積の相対差の 99 パーセンタイルが 1% 未満）。
+- 出力：`front.onnx`、`later.onnx`（重みはファイルの中）、`manifest.json`（元の checkpoint、入出力の名前と型、窓の長さ 2048、前段の stride、opset、確かめた結果）。
+- 最後に `as torch: yes` と出れば一致している。条件は、出力の差が 1e-2 未満、前段の候補が同じ数で頂点の差が 0.05 点未満、面積の相対差の 99 パーセンタイルが 1% 未満。unet v5 の組では、出力の差が最大 1e-3（形）、面積の相対差が 99 パーセンタイルで 2e-4。
 - 窓の長さは 2048 点に固定、後段の候補の数は 1〜1024 で可変。候補が 0 のときは後段を動かさない。
+- 入力は float32。ただし後段の `scaling` だけは float64（`deconvolve_data.inputs` のまま）。
 - 後段は、候補の mask を渡さず（`candidate_mask=None`）、窓 1 つの候補をすべて使う形で書き出す（値で形の変わる処理を通らない）。
+- 書き出しの最適化（onnxscript）は切っている。torch 2.11 と onnxscript 0.7 では、後段のグラフが壊れた（どこからも作られない値を参照した）。onnxruntime が読み込むときに最適化するので、速さは変わらない。
 - σ の補正（`calibrate_deconvolution.py` の JSON）は、ONNX とは別に、同じ組として置く。
 
 ## 後段の面積の不確かさの補正

@@ -12,8 +12,10 @@ CPU, in float32.
 - front.onnx: x (1, 3, LENGTH), the input channels (deconvolve_data.inputs) -> heat (1, cells), offset (1, cells),
   log_widths (1, 2, cells): of the heat, its logits; decode takes sigmoid(heat).
 - later.onnx: x (1, 3, LENGTH), candidates (1, K, 4) of K >= 1 (deconvolve_data.table), present (1, LENGTH),
-  scaling (1, 3) -> baseline, others, log_sigma (1, LENGTH), real, log_height (1, K), shape (K, LENGTH): as the
-  model gives them of a candidate_mask of all there.
+  scaling (1, 3, of float64, as deconvolve_data.inputs has it) -> baseline, others, log_sigma (1, LENGTH), real,
+  log_height (1, K), shape (K, LENGTH): as the model gives them of a candidate_mask of all there.
+
+Of each, its weights in it (no external data). The inputs are of float32 but scaling; the manifest has their types.
 """
 
 import argparse
@@ -32,6 +34,9 @@ from train import provenance
 
 LENGTH = 2048  # of a window, as the later stage is trained and the real traces drawn (plot_real.py)
 MOST_CANDIDATES = 1024
+# of the front's candidates of torch and of onnxruntime, the most they may differ by, of the float32 arithmetic in
+# another order: of the apexes, in points (of the unet v5, 0.01 of 1 of 50 windows), and of the confidences
+APEX_OFF, CONFIDENCE_OFF = 0.05, 1e-3
 FRONT_OUTPUTS = ("heat", "offset", "log_widths")
 LATER_INPUTS = ("x", "candidates", "present", "scaling")
 LATER_OUTPUTS = ("baseline", "others", "log_sigma", "real", "log_height", "shape")
@@ -72,15 +77,42 @@ def example(front: Front, count: int = 50):
 
 
 def exported(module, args, names, outputs, path, dynamic_shapes=None):
-    torch.onnx.export(module, args, str(path), input_names=list(names), output_names=list(outputs),
-                      dynamic_shapes=dynamic_shapes, dynamo=True)
+    """Of torch.export's program (not strict), by torch's exporter (dynamo), not optimized. Of the module given to
+    it, its own torch.export (torch 2.9) took the candidates for more than 1 (a guard of the number of them != 1);
+    its optimizer (onnxscript's) left the later stage's graph of an input of no node (torch 2.11, onnxscript 0.7),
+    and onnxruntime optimizes it as it loads it anyway."""
+    program = torch.export.export(module.eval(), args, dynamic_shapes=dynamic_shapes, strict=False)
+    torch.onnx.export(program, (), str(path), input_names=list(names), output_names=list(outputs), dynamo=True,
+                      optimize=False, external_data=False)
+
+
+def session(path):
+    """An onnxruntime session of a model, on the CPU, of its errors only told (of the later stage, it warns of
+    the CastLike nodes it cannot fold, of no matter)."""
+    import onnxruntime
+
+    options = onnxruntime.SessionOptions()
+    options.log_severity_level = 3
+    return onnxruntime.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
+
+
+def same(ours: list[dict], theirs: list[dict]) -> tuple[bool, float]:
+    """Of two lists of candidates: as many, and each within APEX_OFF and CONFIDENCE_OFF of the other's, in order;
+    and the most the apexes differ by."""
+    if len(ours) != len(theirs):
+        return False, float("inf")
+    apexes = [abs(a["apex"] - b["apex"]) for a, b in zip(ours, theirs)]
+    confidences = [abs(a["confidence"] - b["confidence"]) for a, b in zip(ours, theirs)]
+    most = max(apexes, default=0.0)
+    return most <= APEX_OFF and max(confidences, default=0.0) <= CONFIDENCE_OFF, most
 
 
 def check(front: Front, later, front_session, later_session, count: int) -> dict:
     """Of count windows, the most difference between torch and onnxruntime: of the front's heads, of its candidates
-    (all the same, or how many windows not), of the later stage's outputs, and of its areas (relative)."""
+    (same, or of how many windows not; and of their apexes), of the later stage's outputs, and of its areas
+    (relative)."""
     most = {name: 0.0 for name in FRONT_OUTPUTS + LATER_OUTPUTS}
-    candidates_differ, areas, checked = 0, [], 0
+    candidates_differ, apexes_off, areas, checked = 0, 0.0, [], 0
     for window, _rng in windows(count, LENGTH):
         valid = window["valid"]
         x = inputs(window["signal"], window["missing"], valid, [])["x"]
@@ -92,14 +124,16 @@ def check(front: Front, later, front_session, later_session, count: int) -> dict
         candidates = front(x, int(valid.sum()))
         heat = 1 / (1 + np.exp(-given[0][0]))
         theirs = decode(heat, given[1][0], given[2][0], front.model.stride, length=int(valid.sum()))
-        candidates_differ += [round(c["apex"], 3) for c in theirs] != [round(c["apex"], 3) for c in candidates]
+        alike, off = same(sorted(candidates, key=lambda c: c["apex"]), sorted(theirs, key=lambda c: c["apex"]))
+        candidates_differ += not alike
+        apexes_off = max(apexes_off, off)
         if not candidates:
             continue
         checked += 1
         batch = collate([inputs(window["signal"], window["missing"], valid, candidates)])
         with torch.no_grad():
             ours = later(batch["x"], batch["candidates"], batch["candidate_mask"], batch["present"], batch["scaling"])
-        feed = {name: batch[name].numpy().astype(np.float32) for name in LATER_INPUTS}
+        feed = {name: batch[name].numpy() for name in LATER_INPUTS}  # of the types exported
         theirs = dict(zip(LATER_OUTPUTS, later_session.run(None, feed)))
         for name in LATER_OUTPUTS:
             most[name] = max(most[name], float(np.abs(ours[name].numpy() - theirs[name]).max()))
@@ -113,7 +147,7 @@ def check(front: Front, later, front_session, later_session, count: int) -> dict
                 areas.append(1.0)
     areas = np.array(areas) if areas else np.zeros(1)
     return {"windows": count, "windows with candidates": checked, "most difference": most,
-            "windows of other candidates": candidates_differ,
+            "windows of other candidates": candidates_differ, "most difference of the apexes": apexes_off,
             "areas' relative difference": {"median": float(np.median(areas)), "p99": float(np.percentile(areas, 99)),
                                            "most": float(areas.max())}}
 
@@ -139,18 +173,18 @@ def main(argv=None) -> int:
              dynamic_shapes={"x": None, "candidates": {1: torch.export.Dim("candidates", min=1,
                                                                              max=MOST_CANDIDATES)},
                              "present": None, "scaling": None})
-    sessions = [onnxruntime.InferenceSession(str(out / name), providers=["CPUExecutionProvider"])
-                for name in ("front.onnx", "later.onnx")]
+    sessions = [session(out / name) for name in ("front.onnx", "later.onnx")]
     checked = check(front, later, *sessions, args.check)
+    types = [{i.name: i.type for i in s.get_inputs()} for s in sessions]
     front_saved = torch.load(args.front, map_location="cpu", weights_only=False)
     later_saved = torch.load(args.later, map_location="cpu", weights_only=False)
     manifest = {
         "front": {"checkpoint": args.front, "step": front_saved["step"], "model": front_saved["config"]["model"],
                   "provenance": front_saved["config"].get("provenance"), "stride": front_model.stride,
-                  "inputs": ["x"], "outputs": list(FRONT_OUTPUTS)},
+                  "inputs": types[0], "outputs": list(FRONT_OUTPUTS)},
         "later": {"checkpoint": args.later, "step": later_saved["step"],
                   "provenance": later_saved["config"].get("provenance"),
-                  "inputs": list(LATER_INPUTS), "outputs": list(LATER_OUTPUTS), "most candidates": MOST_CANDIDATES},
+                  "inputs": types[1], "outputs": list(LATER_OUTPUTS), "most candidates": MOST_CANDIDATES},
         "length": LENGTH, "opset": [{"domain": o.domain, "version": o.version}
                                     for o in onnx.load(str(out / "later.onnx")).opset_import],
         "exported": provenance() | {"torch": torch.__version__, "onnx": onnx.__version__,
