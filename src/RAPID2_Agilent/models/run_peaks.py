@@ -27,10 +27,17 @@ def trace_of(target: Target) -> tuple:
 
 @dataclass(frozen=True)
 class Peak:
-    """A peak found in a trace, by RT (min): where it starts and ends, and its top."""
+    """A peak found in a trace, by RT (min): where it starts and ends, and its top. Of the peak detector that finds
+    their shapes too (services.peak_deconvolution), its area of its shape, in intensity x min, with a sigma within
+    which 68 % of its errors are and an interval within which 95 % are, and its fit on the baseline, to be shown;
+    of others, none."""
     start: float
     end: float
     apex: float
+    area: float | None = None
+    area_sigma: float | None = None
+    area_interval: float | None = None
+    fit: tuple = ()  # ((RT, ...), (intensity, ...)) of the fit, or () of none
 
     def __post_init__(self):
         if not self.start <= self.apex <= self.end:

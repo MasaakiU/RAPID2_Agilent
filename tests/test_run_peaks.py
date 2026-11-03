@@ -15,6 +15,8 @@ from RAPID2_Agilent.models.target import MSLevel, Target, ToleranceUnit, TraceTy
 
 def test_a_peak_has_its_top_between_its_ends():
     assert Peak(1.0, 2.0, 1.0) == Peak(start=1.0, end=2.0, apex=1.0)
+    # of a detector that does not find its shape, no area of it and no fit
+    assert (Peak(1.0, 2.0, 1.0).area, Peak(1.0, 2.0, 1.0).area_sigma, Peak(1.0, 2.0, 1.0).fit) == (None, None, ())
     with pytest.raises(ValueError, match="start <= apex <= end"):
         Peak(1.0, 2.0, 2.5)
 

@@ -5,7 +5,7 @@ miss an XIC's m/z window is left out as not measured there, rather than made NaN
 peak top. See docs/rpd_csv_format.md, sections 6 and 9.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -39,6 +39,12 @@ class Quantity:
     mz_peaktop: float | None  # where the scans' mean spectrum is highest in the m/z window; anywhere, for TIC/BPC
     n_missing: int  # scans of an XIC left out, as its m/z window misses their data points
     scan_settings: str  # what the scans in the RT window are, see scan_settings_text
+    # of the target's peak as the peak detector found it (peak_deconvolution), not of the RT window: the area of its
+    # shape, in intensity x min, with a sigma within which 68 % of its errors are and an interval within which 95 %
+    # are; None of another detector's peak, of a window set by hand, or of none taken
+    deconvolved_area: float | None = None
+    deconvolved_area_sigma: float | None = None
+    deconvolved_area_interval: float | None = None
 
 
 def quantify(
@@ -105,13 +111,20 @@ def quantify_target(
     )
     if rt_window is None:
         return Quantity(0, None, None, None, None, None, None, None, None, 0, "")
-    return quantify(
+    quantity = quantify(
         data,
         target.trace_type,
         rt_window,
         mz_window=mz_window if target.trace_type is TraceType.XIC else None,
         **_trace_choice(target, merge_ppm),
     )
+    peak = None if run_peaks is None or run_peaks.manual else next(
+        (peak for peak in run_peaks.peaks if (peak.start, peak.end) == rt_window and peak.area is not None), None
+    )
+    if peak is None:
+        return quantity
+    return replace(quantity, deconvolved_area=peak.area, deconvolved_area_sigma=peak.area_sigma,
+                   deconvolved_area_interval=peak.area_interval)
 
 
 def target_trace(

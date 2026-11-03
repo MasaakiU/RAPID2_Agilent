@@ -58,6 +58,8 @@ TARGET_RANGE_LABEL_COLOR = "#9CC3FF"
 OWN_RT_REGION_COLOR = (255, 0, 0, 50)
 OWN_RT_RANGE_LABEL_COLOR = "#FF8080"
 PEAK_AREA_COLOR = (255, 0, 0, 50)
+# the fit of each peak the peak detector found (its shape on the baseline), and its area +- sigma: for now
+PEAK_FIT_COLOR = (160, 0, 0, 255)
 # the former style, the same in both states: uncomment to restore
 # BROWSING_REGION_COLOR = TARGET_REGION_COLOR = (255, 0, 0, 50)  # red, "#FF000032"
 # BROWSING_MARKER_COLOR = TARGET_MARKER_COLOR = (0, 229, 255, 255)  # cyan, "#00e5ff"

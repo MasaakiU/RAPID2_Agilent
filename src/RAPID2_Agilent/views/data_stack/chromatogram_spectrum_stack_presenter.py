@@ -295,6 +295,7 @@ class ChromatogramSpectrumStackPresenter(QObject):
             if self.current_rt_window is not None:
                 self.set_rt_window(self.current_rt_window)
             self.set_peak_areas({})
+            self.set_peak_fits({})
 
     def set_windows_hidden(self, rt_models=(), *, mz: bool = False):
         """Hide the RT windows of the files of rt_models, and the m/z windows if mz: of the targets selected, theirs
@@ -322,6 +323,12 @@ class ChromatogramSpectrumStackPresenter(QObject):
         """Shade the peaks (start, end) found in each file of peak_areas under its chromatogram; none in the others."""
         for presenter in self.child_presenters:
             presenter.view.chromatogram_window.set_peak_areas(peak_areas.get(presenter.model, ()))
+
+    def set_peak_fits(self, peak_fits: dict[BaseMSDataModel, list[tuple[tuple, tuple, str]]]):
+        """Draw the fits (RTs, intensities, label) of the peaks found in each file of peak_fits over its chromatogram;
+        none in the others."""
+        for presenter in self.child_presenters:
+            presenter.view.chromatogram_window.set_peak_fits(peak_fits.get(presenter.model, ()))
 
     def _style_windows(self, item):
         """Colour the windows by what they edit; the RT window has its menu while it is the file's own."""

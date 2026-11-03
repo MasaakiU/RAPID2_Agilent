@@ -10,6 +10,7 @@ dependencies = [
     "numpy",
     "lxml",
     "scipy",  # RT alignment of the m/z-RT map's B - A view
+    "onnxruntime>=1.30",  # the peak detector's models (services/peak_deconvolution)
 ]
 
 [project.optional-dependencies]

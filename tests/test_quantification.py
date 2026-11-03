@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from RAPID2_Agilent.models.chemistry import ion_mz
-from RAPID2_Agilent.models.run_peaks import RunPeaks
+from RAPID2_Agilent.models.run_peaks import Peak, RunPeaks
 from RAPID2_Agilent.models.target import MSLevel, Target, ToleranceUnit, TraceType
 from RAPID2_Agilent.services import RunCache, operations
 from RAPID2_Agilent.services.quantification import quantify, quantify_target, scan_settings_text
@@ -111,6 +111,19 @@ def test_a_target_is_quantified_in_the_windows_of_the_run_when_given():
     assert (in_target.rt_first, in_target.rt_last, in_target.area) == (0, 2, pytest.approx(6))
     assert (in_run.rt_first, in_run.rt_last, in_run.area) == (3, 5, pytest.approx((1 + 7) / 2 + (7 + 9) / 2))
     assert in_run.mz_peaktop == pytest.approx(200.1)  # the run's m/z window, not the target's
+
+
+def test_the_deconvolved_area_is_of_the_peak_taken_and_of_none_of_a_window_set_by_hand():
+    run, target = _Run([0, 1, 2, 3, 4, 5], [1, 3, 5, 1, 7, 9]), _xic_target()
+    found = Peak(3.0, 5.0, 4.0, area=12.5, area_sigma=0.5, area_interval=1.5)
+    taken = quantify_target(run, target, run_peaks=RunPeaks((100.0, 100.2), (3.0, 5.0), (Peak(0.0, 2.0, 1.0), found)))
+
+    assert (taken.deconvolved_area, taken.deconvolved_area_sigma, taken.deconvolved_area_interval) == (12.5, 0.5, 1.5)
+    assert taken.area == pytest.approx((1 + 7) / 2 + (7 + 9) / 2)  # of the window's points, as of any peak
+    by_hand = quantify_target(run, target, run_peaks=RunPeaks((100.0, 100.2), (3.0, 5.0), (found,), manual=True))
+    of_another = quantify_target(run, target, run_peaks=RunPeaks((100.0, 100.2), (3.0, 5.0), (Peak(3.0, 5.0, 4.0),)))
+    assert by_hand.deconvolved_area is None and of_another.deconvolved_area is None
+    assert quantify_target(run, target).deconvolved_area is None
 
 
 def test_no_peak_taken_in_the_run_gives_no_values():

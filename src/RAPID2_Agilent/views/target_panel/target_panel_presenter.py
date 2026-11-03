@@ -879,6 +879,7 @@ class TargetPanelPresenter(QObject):
         windows, peak_areas = self._run_peaks_shown(target)
         self.data_stack_presenter.set_rt_window(target.rt_window(), windows)
         self.data_stack_presenter.set_peak_areas(peak_areas)
+        self.data_stack_presenter.set_peak_fits(self._peak_fits_shown(target, peak_areas))
 
     def _run_peaks_shown(self, target: Target) -> tuple[dict, dict]:
         """Of the files with a peak of the target in them, its RT window (None: no peak), and of those with peaks
@@ -894,3 +895,13 @@ class TargetPanelPresenter(QObject):
             if run_peaks.peaks:
                 peak_areas[model] = [(peak.start, peak.end) for peak in run_peaks.peaks]
         return windows, peak_areas
+
+    def _peak_fits_shown(self, target: Target, peak_areas: dict) -> dict:
+        """Of the files whose peaks are shown (peak_areas, of _run_peaks_shown), the fits of those that have one
+        (RTs, intensities, area +- sigma), as the peak detector that finds their shapes has them: for now."""
+        fits = {}
+        for model in peak_areas:
+            peaks = self.run_peaks.get(target.id, model.file_path).peaks
+            fits[model] = [(*peak.fit, f"{peak.area:.3g} ± {peak.area_sigma:.2g}") for peak in peaks
+                           if peak.fit and peak.area is not None and peak.area_sigma is not None]
+        return fits

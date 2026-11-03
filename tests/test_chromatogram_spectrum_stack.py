@@ -329,6 +329,21 @@ def test_a_peaks_area_is_shaded_under_the_points_measured_from_its_start_to_its_
     assert window.peak_area_items == []
 
 
+def test_the_fit_of_a_peak_is_drawn_with_its_label_at_its_top():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = ChromatogramWindow()
+    window.set_primary_plot_data(np.arange(6.0), np.array([0.0, 2, 5, 9, 4, 1]))
+
+    window.set_peak_fits([((1.0, 2.0, 3.0), (0.0, 5.0, 1.0), "12 ± 1"), ((4.0,), (1.0,), "of one point")])
+
+    line, label = window.peak_fit_items  # none of a fit of one point
+    np.testing.assert_allclose(line.xData, [1, 2, 3])
+    assert (label.pos().x(), label.pos().y(), label.textItem.toPlainText()) == (2.0, 5.0, "12 ± 1")
+    window.set_peak_fits([])
+    assert window.peak_fit_items == []
+
+
 def build_stack_of(count):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(sys.argv)

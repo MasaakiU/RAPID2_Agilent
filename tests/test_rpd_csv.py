@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from RAPID2_Agilent.io import run_hashes
-from RAPID2_Agilent.models.run_peaks import RunPeaks, RunPeaksStore
+from RAPID2_Agilent.models.run_peaks import Peak, RunPeaks, RunPeaksStore
 from RAPID2_Agilent.models.target import MSLevel, Target, ToleranceUnit, TraceType
 from RAPID2_Agilent.services import RunCache, peak_detection, rpd_csv
 from RAPID2_Agilent.services.peak_detection import find_run_peaks
@@ -120,6 +120,22 @@ def test_the_values_are_in_the_windows_of_the_run_found_where_it_has_none(run, m
     assert kept == find_run_peaks(run.data, found) and kept.rt_window is not None
     assert float(found_row["area"]) == quantify_target(run.data, found, run_peaks=kept).area
     assert float(found_row["RT_btm (value used for calculation)"]) >= kept.rt_window[0]
+
+
+def test_the_deconvolved_area_of_the_peak_taken_is_written_beside_the_windows_values(run):
+    target = _target(1)
+    run_peaks = RunPeaksStore()
+    peak = Peak(0.8, 1.2, 1.0, area=12.5, area_sigma=0.5, area_interval=1.25)
+    run_peaks.set(target.id, run.path, RunPeaks(target.mz_window(), (0.8, 1.2), (peak,)))
+
+    (row,), _notes = rpd_csv.export_rows([target], [run], run_peaks=run_peaks)
+
+    assert (row["area (deconvolved)"], row["area (deconvolved) sigma"], row["area (deconvolved) 95% interval"]) == (
+        "12.5", "0.5", "1.25"
+    )
+    assert row["area"] != ""
+    (row,), _notes = rpd_csv.export_rows([target], [run])  # of the target's window, of no peak found
+    assert row["area (deconvolved)"] == "" and row["area"] != ""
 
 
 def test_without_runs_a_row_for_each_target():

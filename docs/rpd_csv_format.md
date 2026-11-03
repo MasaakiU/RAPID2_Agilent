@@ -78,8 +78,9 @@ Targets パネルの「…」メニュー（Import targets… / Export targets�
 | `RT_btm (value used for calculation)`, `RT_top (value used for calculation)` | 計算に使った最初と最後のスキャンの RT | 同じ。RAPID2 では同じ列が2回出ていたが、1回だけにする |
 | `N_scans (value used for calculation)` | 計算に使ったスキャンの数（欠測を除く。§6.2） | 新規。欠測を飛ばして積分するので、面積がいくつのスキャンから出たかを表で分かるようにする |
 | `area`, `area (baseline adjusted)`, `height`, `baseline_height`, `RT peaktop`, `mz peaktop` | 定量値（§6） | 同じ。定義も同じ |
+| `area (deconvolved)`, `area (deconvolved) sigma`, `area (deconvolved) 95% interval` | ピーク検出器が分けたピークの形の面積と、その不確かさ（§6.3） | 新規 |
 
-書き出しの列順：`#`, `compound_name`, `formula`, `adduct`, `file_path`, `file_name`, `data_hash`, `scan_sha256`, `scan_settings`, `trace_type`, `MS_level`, `precursor_m/z`, `collision_energy`, `isolation_width`, `m/z`, `m/z_range`, `m/z_range_unit`, `RT`, `RT_range`, `m/z_btm`, `m/z_top`, `RT_btm`, `RT_top`, `RT_btm (value used for calculation)`, `RT_top (value used for calculation)`, `N_scans (value used for calculation)`, `area`, `area (baseline adjusted)`, `height`, `baseline_height`, `RT peaktop`, `mz peaktop`, `note`
+書き出しの列順：`#`, `compound_name`, `formula`, `adduct`, `file_path`, `file_name`, `data_hash`, `scan_sha256`, `scan_settings`, `trace_type`, `MS_level`, `precursor_m/z`, `collision_energy`, `isolation_width`, `m/z`, `m/z_range`, `m/z_range_unit`, `RT`, `RT_range`, `m/z_btm`, `m/z_top`, `RT_btm`, `RT_top`, `RT_btm (value used for calculation)`, `RT_top (value used for calculation)`, `N_scans (value used for calculation)`, `area`, `area (baseline adjusted)`, `area (deconvolved)`, `area (deconvolved) sigma`, `area (deconvolved) 95% interval`, `height`, `baseline_height`, `RT peaktop`, `mz peaktop`, `note`
 
 RAPID2 の列のうち出さないもの：`is_TIC`（`trace_type` に置き換え）、`view_range_s_x` / `view_range_c_x`（このアプリにはターゲットごとの表示範囲がない）、`is deisotoped`（deisotoping を実装したら戻す）。
 
@@ -186,10 +187,14 @@ RAPID2 の `calc_chromatogram_auc` と同じ定義にする。そのうえで、
 | `height` | `y` の最大値 |
 | `RT peaktop` | `y` が最大のスキャンの RT。`height` が 0 なら空欄 |
 | `mz peaktop` | 使ったスキャンの平均スペクトルで、m/z 窓の中の最大の m/z（TIC/BPC は全範囲）。最大値が 0 なら空欄 |
+| `area (deconvolved)` | ピーク検出器（`services/peak_deconvolution.py`、`training/peak_detector`）が、重なったピークを分けて求めた、そのピークの形の面積。単位は 強度 × min。ベースラインと隣のピークは含まない。RT 窓の点の積分ではない |
+| `area (deconvolved) sigma` | `area (deconvolved)` の誤差の 68% が入る幅（合成データで補正したもの） |
+| `area (deconvolved) 95% interval` | 同じく 95% が入る幅（±）。誤差の分布の裾が重いので、sigma の 2 倍より広い |
 
 - 使えるスキャンが2未満（RT 幅 0、極性が合わない、など）のときは、`N_scans (value used for calculation)`（0 か 1）のほかの結果列をすべて空欄にする。
 - `mz peaktop` の平均スペクトルは、XIC では m/z 窓の中だけで作る（全 m/z で作るのと同じ値で、約 20 倍速い）。格子は、使ったスキャンの RT の真ん中に最も近いスキャンのデータ点。
 - area は窓の中の点の合計から計算するので、m/z 窓の幅で値が変わる（RAPID2 と同じ定義。同じターゲットをファイル間で比べる用途なので問題ない）。
+- `area (deconvolved)` とその不確かさは、そのファイルの積分区間が、ピーク検出器の見つけたピーク（ターゲットに選ばれたもの）のときだけ書く。ほかの検出器、手で決めた区間、ピークが選ばれていないときは空欄。区間の点の値（`area` など）は、そのピークの範囲（形が頂上の 5% まで下がるところ）で計算する。
 
 ### 6.4 Export の操作と警告
 

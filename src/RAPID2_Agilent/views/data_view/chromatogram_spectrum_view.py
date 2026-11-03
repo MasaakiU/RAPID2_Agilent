@@ -10,6 +10,7 @@ from RAPID2_Agilent.views.view_constants import (
     BROWSING_RANGE_LABEL_COLOR,
     BROWSING_REGION_COLOR,
     PEAK_AREA_COLOR,
+    PEAK_FIT_COLOR,
     PLOT_WARNING_COLOR,
 )
 
@@ -445,6 +446,7 @@ class ChromatogramWindow(MyPlotWidget):
         # self.setLabel("left", "Intensity")
         self.peak_areas: list[tuple[float, float]] = []  # (start, end) in RT, of the peaks found
         self.peak_area_items: list[pg.PlotDataItem] = []
+        self.peak_fit_items: list = []  # the lines and labels of set_peak_fits
         # the RT window's menu, while it is a target's peak in the file (set_rt_window_menu_enabled)
         self.rt_window_menu = QMenu(self)
         self.no_peak_action = self.rt_window_menu.addAction("No peak in this file")
@@ -485,6 +487,25 @@ class ChromatogramWindow(MyPlotWidget):
             item.setZValue(1)  # over the RT window, under the trace
             self.addItem(item)
             self.peak_area_items.append(item)
+
+
+    def set_peak_fits(self, fits: Sequence[tuple[tuple, tuple, str]]):
+        """Draw the fit of each peak (RTs, intensities), with its label at its top; for now, as the peak detector
+        that finds the peaks' shapes has them."""
+        for item in self.peak_fit_items:
+            self.removeItem(item)
+        self.peak_fit_items = []
+        for rt, intensity, label in fits:
+            if len(rt) < 2:
+                continue
+            line = pg.PlotDataItem(rt, intensity, pen=pg.mkPen(PEAK_FIT_COLOR, width=1))
+            line.setZValue(3)  # over the trace
+            top = int(np.argmax(intensity))
+            text = pg.TextItem(label, color=PEAK_FIT_COLOR, anchor=(0.5, 1))
+            text.setPos(rt[top], intensity[top])
+            for item in (line, text):
+                self.addItem(item)
+                self.peak_fit_items.append(item)
 
 
 class SpectrumWindow(MyPlotWidget):

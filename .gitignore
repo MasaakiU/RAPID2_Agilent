@@ -22,9 +22,12 @@ src/RAPID2_Agilent/io/_native/**/*.html
 tests/mz_grid_*.json
 data/
 
-# automatic peak detection (peakonly, Kensert et al.): on this machine only, not committed for now
+# automatic peak detection (peakonly, Kensert et al., and the peak detector of training/peak_detector): on this
+# machine only, not committed for now
 src/RAPID2_Agilent/resources/model/
 src/RAPID2_Agilent/services/peak_detection.py
+src/RAPID2_Agilent/services/peak_deconvolution.py
+tests/test_peak_deconvolution.py
 src/RAPID2_Agilent/services/peakonly_cnn.py
 src/RAPID2_Agilent/services/kensert_cnn.py
 src/RAPID2_Agilent/services/cnn_ops.py
