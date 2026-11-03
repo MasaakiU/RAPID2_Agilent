@@ -17,12 +17,13 @@
 | `evaluate_real.py` | 正解付けツールのラベルでの、実データの評価 | torch |
 | `export.py` | 重みを `.npz` に書き出す（アプリは torch なしで読む） | torch |
 | `make_examples.py` | 合成データの例と図 | numpy, scipy, matplotlib |
-| `deconvolve.py` | 後段（ピークの分離）の、モデル以外の部品：候補、形の高さの最小二乗、評価 | numpy, scipy |
+| `deconvolve.py` | 後段（ピークの分離）の、モデル以外の部品：候補、形の高さの最小二乗、面積の不確かさの補正、評価 | numpy, scipy |
 | `evaluate_deconvolution.py` | 後段の比べる基準（正解の形での最小二乗、EMG の当てはめ、アプリのやり方）と、学習した後段の、合成データでの評価 | numpy, scipy（窓の切り出しとモデルに torch） |
 | `deconvolve_data.py` | 後段の学習データ（窓、誤りを足した候補、入力、候補ごとと窓の正解） | torch |
 | `deconvolve_models.py` | 後段のモデル（候補ごとの形・本物らしさ・高さ、窓のベースライン・その他・ノイズ）と、窓への後段（モデルのあとに最小二乗） | torch |
 | `deconvolve_losses.py` | 後段の損失（形、形の裾、本物らしさ、高さ、ベースライン、その他、ノイズ、最小二乗で出した面積） | torch |
 | `train_deconvolution.py` | 後段の学習 | torch |
+| `calibrate_deconvolution.py` | 学習した後段の、面積の不確かさ（σ）の補正を、合成データで作る | torch |
 | `configs/` | 設定（前段：`transformer.json`、`unet.json`、`kensert.json`、動作確認用の `cpu_tiny.json`。後段：`deconvolution.json`、`deconvolution_unet.json`、`deconvolution_cpu_tiny.json`） | |
 
 ## 環境
@@ -133,6 +134,22 @@ python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_dec
 - `evaluate_deconvolution.py --method model` の `--real`、`--strength`、`--low` で、学習し直さずに、取る候補、引き寄せの強さ、その他として当てはめる候補を変えて比べられる（暫定は `--real 0.3 --strength 0.1`。`--low` を `--real` と同じにすると、その他としての当てはめは無し）。`low` より前の run の checkpoint は、`deconvolve_models.LOW` で評価する。
 - ベースラインとその他は、入力の log チャンネルの目盛りで出す（`model_options` の `background`、既定 `"log"`）。それより前の run（`2026-10-30_deconv_v6_100k_*`）の checkpoint は、線形として読む。
 - 速さ：エンコーダは前段の `transformer` と同じ。1 窓あたり、データ作りは前段（unet v5）を走らせるのと合わせて 34 ms ほど（Apple M 系の CPU 1 コア。前段だけで 20 ms）。バッチ 32 なら、`workers=14` で 1 秒に 13 バッチほど作れる。`steps_per_s` がそれに近ければ、データ作りが追いついていない。
+
+## 後段の面積の不確かさの補正
+
+最小二乗の σ は、ノイズの分しか表さず、実際の誤差の 1/20 ほどしかない（形や背景の誤りが入らない）。合成データで、ピークごとの当てはめの特徴（隣の形との重なり、隣の高さ、残差、S/N など、`deconvolve.fit_features`）と、実際の面積の誤差の関係を学び、σ を補正する。学習し直しはいらない。
+
+```sh
+python calibrate_deconvolution.py --checkpoint runs/x/best.pt --front runs/2026-10-29_unet_v5_200k/best.pt \
+    --count 3000 --test 2000 --real 0.3 --strength 0.1 --low 0.02 --out runs/x/calibration.json
+python evaluate_deconvolution.py --method model --checkpoint runs/x/best.pt --candidates front \
+    --front runs/2026-10-29_unet_v5_200k/best.pt --real 0.3 --strength 0.1 --calibration runs/x/calibration.json
+```
+
+- 出すもの：`sigma`（誤差の 68% が入る幅）と `interval`（95% が入る幅）。誤差の分布の裾が重いので、2σ は 95% の幅にならない。最小二乗の σ は `sigma_noise` に残す。
+- 補正は、後段・前段・`real`・`strength`・`low` の組ごとに作る（誤差がそれで決まるため。JSON に記録する）。
+- 補正を学ぶ窓の乱数（`calibrate_deconvolution.CALIBRATION_SEED`）は、学習・検証・評価の窓と別。`--test` は評価と同じ窓（`evaluate_deconvolution.SEED`）で、内訳ごとの当たり具合を出す。
+- 中身は、特徴の対数に線形な、誤差の絶対値の対数の分位点回帰（`deconvolve.fit_calibration`。scipy の線形計画）。重みは JSON に数十個の数で入る。
 
 ## コードの版と、学習結果の出どころ
 

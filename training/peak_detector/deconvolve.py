@@ -1,6 +1,6 @@
 """The later stage's parts other than its model (SPEC_deconvolution.md): the peaks whose shapes it is to find, the
-candidates it is given, the heights of shapes by least squares, and its scores against the simulator's parts. numpy
-and scipy only.
+candidates it is given, the heights of shapes by least squares, the calibration of the areas' sigma, and its scores
+against the simulator's parts. numpy and scipy only.
 
 A window here is a dict as data.cut makes it (signal, missing, valid, peaks, meta, and the parts baseline, others and
 sigma); whole() makes one of a sample as it is.
@@ -9,7 +9,8 @@ sigma); whole() makes one of a sample as it is.
 from dataclasses import dataclass, replace
 
 import numpy as np
-from scipy.optimize import nnls
+from scipy import sparse
+from scipy.optimize import linprog, nnls
 
 from decode import assign
 
@@ -22,6 +23,11 @@ REACH = 4.0  # of a candidate's 5 % widths each side, its span: where the baseli
 # confidences of the candidates roughened() adds: of the front's candidates on nothing, 95 % are below 0.2 (unet v5, on
 # the simulated windows, from decode's threshold of 0.05)
 ADDED = (0.05, 0.3)
+# of a peak's fit, what its area's error is calibrated of (fit_features), and the quantiles of the |relative error|
+# fitted: of a normal error, 1 and 2 sigma
+FEATURES = ("share", "neighbor", "others", "snr", "residual", "z_rms", "relative_ls", "realness", "prior_ratio",
+            "width", "near", "zero")
+QUANTILES = (0.6827, 0.9545)
 
 
 def whole(sample) -> dict:
@@ -188,6 +194,83 @@ def heights(residual, shapes, weights, prior=None, strength=0.0,
     return found, covariance, amounts
 
 
+### the areas' sigma, calibrated ###
+def fit_features(shape, height, prior, neighbors, others, residual, noise, valid, realness: float,
+                 relative_ls: float) -> np.ndarray:
+    """Of a peak taken, the features (FEATURES) of its fit that its area's error is of, as the later stage has them
+    when used: of its shape (N, of top 1) at the height found (at prior, the network's, of a height of 0), the shapes
+    of the other peaks taken at theirs (M, N), the others, the residual and the noise (N), in the window (valid).
+
+    share: of its area, what the others' shapes take of the points (of each point, in proportion); neighbor: the
+    most of the others' shapes in its range (to 5 % of its top), over its top; others: of the others in its range,
+    over its area; snr: its top over the noise there; residual: of the residual in its range, the sum over its area;
+    z_rms: of the residual over the noise there; relative_ls: the least squares' sigma of its area over it; the
+    realness; prior_ratio: its height over the network's; width: of its range, in points; near: of the others, those
+    in its range above 5 % of its top; zero: its height 0."""
+    zero = height <= 0
+    own = (prior if zero else height) * np.where(valid, shape, 0.0)
+    neighbors = np.where(valid, np.asarray(neighbors, dtype=np.float64).reshape(-1, len(own)), 0.0)
+    fitted = neighbors.sum(0)
+    total = max(own.sum(), 1e-30)
+    top = max(own.max(), 1e-30)
+    inside = own >= LEVEL * top
+    noise = np.maximum(noise, 1e-30)
+    return np.array([(own * fitted / np.maximum(own + fitted, 1e-30)).sum() / total,
+                     (fitted[inside] / top).max(initial=0.0),
+                     np.abs(others[inside]).sum() / total,
+                     top / noise[int(np.argmax(own))],
+                     abs(residual[inside].sum()) / total,
+                     np.sqrt(np.mean((residual[inside] / noise[inside]) ** 2)),
+                     0.0 if zero else relative_ls,
+                     realness,
+                     (prior if zero else height) / max(prior, 1e-30),
+                     inside.sum(),
+                     (neighbors[:, inside] > LEVEL * top).any(axis=1).sum(),
+                     float(zero)])
+
+
+def design(features) -> np.ndarray:
+    """Of features (P, FEATURES each), what the calibration is linear in: their logs, mostly."""
+    f = np.atleast_2d(np.asarray(features, dtype=np.float64))
+    col = {name: f[:, i] for i, name in enumerate(FEATURES)}
+    real = np.clip(col["realness"], 1e-4, 1 - 1e-4)
+    ratio = np.log(np.maximum(col["prior_ratio"], 1e-6))
+    return np.stack([np.log(col["share"] + 1e-3), np.log(col["neighbor"] + 1e-3), np.log(col["others"] + 1e-4),
+                     np.log(np.maximum(col["snr"], 1e-3)), np.log(col["residual"] + 1e-4),
+                     np.log(np.maximum(col["z_rms"], 1e-3)), np.log(col["relative_ls"] + 1e-4),
+                     np.log(real / (1 - real)), ratio, np.abs(ratio), np.log(np.maximum(col["width"], 1.0)),
+                     col["near"], col["zero"]], 1)
+
+
+def fit_calibration(features, errors) -> dict:
+    """Of the features of peaks found (P, FEATURES each) and their areas' relative errors (P, over their scale), of
+    each of QUANTILES, the quantile of the |error| by linear quantile regression of its log on design(features)
+    (standardized): a linear program of the pinball loss (Koenker and Bassett)."""
+    x = design(features)
+    mean, sd = x.mean(0), x.std(0) + 1e-12
+    x = (x - mean) / sd
+    y = np.log(np.abs(np.asarray(errors, dtype=np.float64)) + 1e-6)
+    n, p = x.shape
+    lhs = sparse.hstack([sparse.csr_matrix(np.column_stack([x, np.ones(n)])), sparse.eye(n), -sparse.eye(n)])
+    out = {"features": list(FEATURES), "mean": mean.tolist(), "sd": sd.tolist(), "quantiles": {}}
+    for q in QUANTILES:
+        cost = np.concatenate([np.zeros(p + 1), np.full(n, q), np.full(n, 1 - q)])
+        bounds = [(None, None)] * (p + 1) + [(0, None)] * (2 * n)
+        solved = linprog(cost, A_eq=lhs.tocsr(), b_eq=y, bounds=bounds, method="highs")
+        if not solved.success:
+            raise RuntimeError(f"of the quantile {q}: {solved.message}")
+        out["quantiles"][str(q)] = {"weights": solved.x[:p].tolist(), "intercept": float(solved.x[p])}
+    return out
+
+
+def calibrated(calibration: dict, features) -> dict[str, np.ndarray]:
+    """Of a calibration (fit_calibration's) and features (P, FEATURES each): of each of its quantiles, of the
+    |relative error| (P)."""
+    x = (design(features) - np.array(calibration["mean"])) / np.array(calibration["sd"])
+    return {q: np.exp(x @ np.array(fitted["weights"]) + fitted["intercept"])
+            for q, fitted in calibration["quantiles"].items()}
+
+
 ### scores ###
 def separation(a, b) -> float:
     """Rs of two peaks (SPEC.md 2)."""
@@ -265,6 +348,8 @@ class Scores:
             record["area"] = (estimate["area"] - area) / area
             if estimate.get("sigma"):
                 record["z"] = (estimate["area"] - area) / estimate["sigma"]
+            if estimate.get("interval"):
+                record["inside"] = abs(estimate["area"] - area) <= estimate["interval"]
             shape = estimate.get("shape")
             if shape is not None and np.where(valid, shape, 0).max() > 0:
                 shape, truth = np.where(valid, shape, 0.0) / np.where(valid, shape, 0.0).max(), truth / truth.max()
@@ -314,6 +399,10 @@ def _summaries(records) -> dict:
         if len(z):
             # of the error over the sigma given: about 1, and 95 % within 2, if the sigma is right
             summary |= {"z sd (robust)": float(1.4826 * np.median(np.abs(z - np.median(z)))),
+                        "within 1 sigma": float(np.mean(np.abs(z) <= 1)),
                         "within 2 sigma": float(np.mean(np.abs(z) <= 2))}
+        inside = [record["inside"] for record in found if "inside" in record]
+        if inside:
+            summary["within the interval"] = float(np.mean(inside))  # of a 95 % one, 0.95 if right
         out[name] = summary
     return out

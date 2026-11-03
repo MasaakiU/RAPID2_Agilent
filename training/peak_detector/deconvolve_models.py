@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from deconvolve import clusters, corrections, heights
+from deconvolve import QUANTILES, calibrated, clusters, corrections, fit_features, heights
 from deconvolve_data import collate, inputs
 from features import CHANNELS, LOG_SCALE
 from models import ConvBlock
@@ -267,8 +267,8 @@ def run(model, batch: dict, device) -> dict:
 
 
 @torch.no_grad()
-def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = STRENGTH,
-              low: float = LOW) -> list[dict]:
+def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = STRENGTH, low: float = LOW,
+              calibration: dict | None = None) -> list[dict]:
     """Of each window of a batch and the model's outputs of it, the later stage's: the candidates, each {"apex",
     "confidence" (its realness), "real" (taken for a peak's), and of those taken "area" and "sigma" (of the area),
     "shape" (the peak on the window's points) and "top" (the point of its top)}, the heights of their shapes by
@@ -278,7 +278,12 @@ def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = 
 
     The candidates of realness from low, under real, are in the least squares too, not pulled, and their fit in the
     others: of the signal, though not a peak's. Of one left out, as the others are not trained to hold what a
-    candidate matches, its signal was in nothing fitted, or in its neighbors' areas (SPEC_deconvolution.md 5)."""
+    candidate matches, its signal was in nothing fitted, or in its neighbors' areas (SPEC_deconvolution.md 5).
+
+    Of each taken, also "features" of its fit (deconvolve.fit_features) and "scale", its area (of an area of 0, that
+    of its shape at the network's height); of a calibration (deconvolve.fit_calibration), "sigma" of it, of the
+    error of the area within which 68 % are, "interval" within which 95 % are, and "sigma_noise" the least squares'
+    (of the noise only, some 20 times too small: SPEC_deconvolution.md 5)."""
     mask = batch["candidate_mask"].numpy()
     numbers = {key: outputs[key].float().cpu().numpy().astype(np.float64)
                for key in ("real", "log_height", "shape", "baseline", "others")}
@@ -317,17 +322,32 @@ def estimates(outputs: dict, batch: dict, real: float = REAL, strength: float = 
                          "sigma": float(np.sqrt(max(covariance[j, j], 0.0)) * sums[k] * top) or None,
                          "shape": found[j] * shapes[k] * top, "top": int(np.argmax(shapes[k]))}
             peaks.append(peak)
+        residual = x[i, 0] - numbers["baseline"][i] - others - fitted
+        prior = np.exp(numbers["log_height"][i, :count])
+        for j, k in enumerate(taken):
+            peak = peaks[k]
+            neighbors = [found[n] * shapes[m] for n, m in enumerate(taken) if m != k]
+            relative = peak["sigma"] / peak["area"] if peak["sigma"] and peak["area"] > 0 else 0.0
+            peak["features"] = fit_features(shapes[k], found[j], prior[k], neighbors, others, residual, sigma,
+                                            valid[i] > 0, float(realness[i, k]), relative)
+            peak["scale"] = peak["area"] if peak["area"] > 0 else float(prior[k] * sums[k] * top)
+        if calibration is not None and len(taken):
+            quantiles = calibrated(calibration, [peaks[k]["features"] for k in taken])
+            for n, k in enumerate(taken):
+                peaks[k] |= {"sigma_noise": peaks[k]["sigma"],
+                             "sigma": float(quantiles[str(QUANTILES[0])][n] * peaks[k]["scale"]),
+                             "interval": float(quantiles[str(QUANTILES[1])][n] * peaks[k]["scale"])}
         out.append({"peaks": peaks, "baseline": corrected * top + base, "others": others * top, "sigma": sigma * top,
-                    "residual": (x[i, 0] - numbers["baseline"][i] - others - fitted) * top})
+                    "residual": residual * top})
     return out
 
 
 def deconvolve(model, signal, missing, valid, candidates, device="cpu", real: float = REAL,
-               strength: float = STRENGTH, low: float = LOW) -> dict:
+               strength: float = STRENGTH, low: float = LOW, calibration: dict | None = None) -> dict:
     """The later stage on one window (valid True in it) and its candidates (each {"apex", "confidence", "left",
     "right"}): as estimates gives it."""
     batch = collate([inputs(signal, missing, valid, candidates)])
     model.eval()
     with torch.no_grad():
         outputs = run(model, batch, device)
-    return estimates(outputs, batch, real, strength, low)[0]
+    return estimates(outputs, batch, real, strength, low, calibration)[0]

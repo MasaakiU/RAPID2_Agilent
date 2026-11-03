@@ -6,7 +6,7 @@
 - app: the app's ranges and areas (services/peak_detection._peaks_at, services/quantification.quantify), copied
   here, as this folder does not depend on the app
 - model: the later stage trained (train_deconvolution.py), its candidates of realness from --real taken (and those
-  from --low fitted to the others)
+  from --low fitted to the others); of --calibration (calibrate_deconvolution.py), its areas' sigma calibrated
 
     python evaluate_deconvolution.py --method truth --count 2000 --out truth.json
     python evaluate_deconvolution.py --method emg --candidates perturbed --count 300 --out emg.json
@@ -38,13 +38,13 @@ APP_END_HEIGHT = 0.8  # services/peak_detection.END_HEIGHT
 APP_SNAP = 2  # points about a candidate, of which the highest is its top, as kensert_peaks takes the CNN's
 
 
-def windows(count: int, length: int, config: Config = Config()):
+def windows(count: int, length: int, config: Config = Config(), seed: int = SEED):
     """The same windows every time, each with a generator of its own for its candidates."""
     from data import cut  # of torch, which the rest does without
 
     for i in range(count):
-        rng = np.random.default_rng([SEED, i])
-        yield cut(simulate(rng, config), length, rng), np.random.default_rng([SEED, i, 1])
+        rng = np.random.default_rng([seed, i])
+        yield cut(simulate(rng, config), length, rng), np.random.default_rng([seed, i, 1])
 
 
 ### least squares on the true shapes ###
@@ -187,7 +187,7 @@ def app(window, candidates) -> list[dict]:
 
 ### the later stage trained ###
 def trained(checkpoint: str, device: str = "cpu", real: float | None = None, strength: float | None = None,
-            low: float | None = None):
+            low: float | None = None, calibration: dict | None = None):
     """The later stage of a checkpoint as a method (the candidates it takes), and the real, strength and low it takes
     them of: those it was checked with in training (of a run before low, deconvolve_models.LOW), unless given."""
     import torch
@@ -202,7 +202,7 @@ def trained(checkpoint: str, device: str = "cpu", real: float | None = None, str
 
     def method(window, candidates) -> list[dict]:
         found = deconvolve(model, window["signal"], window["missing"], window["valid"], candidates, device, real,
-                           strength, low)
+                           strength, low, calibration)
         return [peak for peak in found["peaks"] if peak["real"]]
 
     return method, real, strength, low
@@ -227,6 +227,7 @@ def main(argv=None) -> int:
     parser.add_argument("--strength", type=float, help="of the model: the heights' pull to the network's")
     parser.add_argument("--low", type=float, help="of the model: the realness from which one not taken is fitted to "
                                                   "the others (from --real: none)")
+    parser.add_argument("--calibration", help="of the model: of its areas' sigma (calibrate_deconvolution.py)")
     parser.add_argument("--out")
     args = parser.parse_args(argv)
     if args.method == "model" and not args.checkpoint:
@@ -235,8 +236,9 @@ def main(argv=None) -> int:
         parser.error("--candidates front needs --front")
     method = METHODS.get(args.method)
     if args.method == "model":
+        calibration = json.loads(Path(args.calibration).read_text()) if args.calibration else None
         method, args.real, args.strength, args.low = trained(args.checkpoint, args.device, args.real, args.strength,
-                                                             args.low)
+                                                             args.low, calibration)
     front = None
     if args.candidates == "front" and args.method != "truth":
         from deconvolve_data import Front, inputs  # of torch
@@ -258,7 +260,8 @@ def main(argv=None) -> int:
     if front:
         summary |= {"front": args.front, "confidence": args.confidence}
     if args.method == "model":
-        summary |= {"checkpoint": args.checkpoint, "real": args.real, "strength": args.strength, "low": args.low}
+        summary |= {"checkpoint": args.checkpoint, "real": args.real, "strength": args.strength, "low": args.low,
+                    "calibration": args.calibration}
     print(json.dumps(summary, indent=1))
     if args.out:
         Path(args.out).write_text(json.dumps(summary, indent=1))

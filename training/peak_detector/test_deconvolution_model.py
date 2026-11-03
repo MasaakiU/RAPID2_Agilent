@@ -11,7 +11,8 @@ torch = pytest.importorskip("torch")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from data import cut  # noqa: E402
-from deconvolve import CandidateErrors, full, heights, oracle_candidates, present, shaped, weighed  # noqa: E402
+from deconvolve import (FEATURES, QUANTILES, CandidateErrors, full, heights, oracle_candidates, present,  # noqa: E402
+                        shaped, weighed)
 from deconvolve_data import (PER_CANDIDATE, Front, collate, inputs, make_item, table, targets,  # noqa: E402
                              validation_set)
 from deconvolve_losses import losses, profile_errors, solve  # noqa: E402
@@ -263,6 +264,27 @@ def test_a_candidate_not_taken_but_of_realness_from_low_is_fitted_to_the_others_
                                + added["peaks"][0]["shape"], signal, rtol=1e-6)
 
 
+def test_of_a_calibration_the_peaks_taken_have_its_sigma_and_interval_and_the_least_squares_one_besides():
+    x = np.arange(300.0)
+    signal = 10 + 1000 * np.exp(-0.5 * ((x - 100) / 5) ** 2) + 300 * np.exp(-0.5 * ((x - 200) / 8) ** 2)
+    signal = signal + np.random.default_rng(0).normal(0, 2, 300)
+    candidates = [{"apex": 100.0, "confidence": 0.9, "left": 12.0, "right": 12.0},
+                  {"apex": 200.0, "confidence": 0.8, "left": 20.0, "right": 20.0}]
+    calibration = {"features": list(FEATURES), "mean": [0.0] * 13, "sd": [1.0] * 13,
+                   "quantiles": {str(QUANTILES[0]): {"weights": [0.0] * 13, "intercept": float(np.log(0.1))},
+                                 str(QUANTILES[1]): {"weights": [0.0] * 13, "intercept": float(np.log(0.25))}}}
+    model = _model()
+    plain = deconvolve(model, signal, np.zeros(300, bool), np.ones(300, bool), candidates, real=0.0)
+    given = deconvolve(model, signal, np.zeros(300, bool), np.ones(300, bool), candidates, real=0.0,
+                       calibration=calibration)
+    for before, peak in zip(plain["peaks"], given["peaks"]):
+        assert len(peak["features"]) == len(FEATURES) and np.isfinite(peak["features"]).all()
+        assert peak["sigma"] == pytest.approx(0.1 * peak["scale"]) and peak["interval"] == pytest.approx(
+            0.25 * peak["scale"])
+        assert peak["sigma_noise"] == before["sigma"] and "interval" not in before
+        assert peak["scale"] == (peak["area"] if peak["area"] > 0 else peak["scale"])
+
+
 def test_of_fronts_each_window_takes_ones_and_the_validation_set_each_in_turn():
     def given(apex):
         return lambda _x, _length: [{"apex": apex, "confidence": 0.5, "left": 5.0, "right": 5.0}]
@@ -305,6 +327,21 @@ def test_training_checking_and_evaluating_run_through(tmp_path, front):
         assert summary["peaks"] > 0 and summary["real"] == 0.5 and summary["strength"] == 0.01
         assert summary["low"] == 0.02
     assert summary["candidates"] == "perturbed" and "front" not in summary
+    import calibrate_deconvolution
+
+    assert calibrate_deconvolution.main(["--checkpoint", str(tmp_path / "run" / "last.pt"), "--front", front,
+                                         "--count", "3", "--test", "3", "--length", "512", "--real", "0.0",
+                                         "--out", str(tmp_path / "calibration.json")]) == 0
+    calibration = json.loads((tmp_path / "calibration.json").read_text())
+    assert set(calibration["quantiles"]) == {str(q) for q in QUANTILES} and calibration["peaks"] > 0
+    assert calibration["real"] == 0.0 and "all" in calibration["test"]["by category"]
+    assert evaluate_deconvolution.main(["--method", "model", "--checkpoint", str(tmp_path / "run" / "last.pt"),
+                                        "--candidates", "front", "--front", front, "--count", "3", "--length", "512",
+                                        "--real", "0.0", "--calibration", str(tmp_path / "calibration.json"),
+                                        "--out", str(tmp_path / "calibrated.json")]) == 0
+    summary = json.loads((tmp_path / "calibrated.json").read_text())
+    assert summary["calibration"] == str(tmp_path / "calibration.json")
+    assert "within the interval" in summary["by category"]["all"]
     assert evaluate_deconvolution.main(["--method", "app", "--candidates", "front", "--front", front, "--count", "3",
                                         "--length", "512", "--confidence", "0.5",
                                         "--out", str(tmp_path / "app.json")]) == 0

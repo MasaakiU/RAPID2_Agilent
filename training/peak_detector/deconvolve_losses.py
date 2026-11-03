@@ -5,7 +5,8 @@
     profile:  of those, the shape at the peak's true height against the peak's profile, as the baseline's:
               log(1 + |error| / the noise) at each point, summed over the points where the peak is above the noise
               (profile_errors). Of a strong peak, its tails down to the noise, which make the areas of the small
-              ones next to it, and of which the L1 over its sum tells little
+              ones next to it, and of which the L1 over its sum tells little. Of weight 0: tried, its shapes better
+              but not its areas, and its fit of the real traces worse (SPEC_deconvolution.md 5)
     real:     binary cross entropy of the realness, of the candidates scored
     height:   L1 of the log height, of those matched
     baseline, others: log(1 + |error| / the noise), where the noise is known: of what matters to the least squares,
@@ -22,7 +23,7 @@ import torch.nn.functional as F
 
 from deconvolve_models import STRENGTH, log_noise
 
-DEFAULT_WEIGHTS = {"shape": 1.0, "profile": 0.1, "real": 1.0, "height": 0.1, "baseline": 0.2, "others": 0.2,
+DEFAULT_WEIGHTS = {"shape": 1.0, "profile": 0.0, "real": 1.0, "height": 0.1, "baseline": 0.2, "others": 0.2,
                    "sigma": 0.1, "area": 1.0}
 ROUNDS = 4  # of solving again without those below 0
 

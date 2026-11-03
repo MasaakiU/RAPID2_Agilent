@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deconvolve import (ADDED, CandidateErrors, clusters, corrections, heights, oracle_candidates,  # noqa: E402
-                        perturbed_candidates, roughened, score, shaped, whole)
+from deconvolve import (ADDED, FEATURES, QUANTILES, CandidateErrors, calibrated, clusters, corrections,  # noqa: E402
+                        fit_calibration, fit_features, heights, oracle_candidates, perturbed_candidates, roughened,
+                        score, shaped, whole)
 from evaluate_deconvolution import app, emg, fit_emg, truth  # noqa: E402
 from simulator import Config, Peak, Sample, simulate  # noqa: E402
 
@@ -46,6 +47,52 @@ def test_heights_of_shapes_make_up_the_signal():
     # of a strength each: the one of 0 free, the other held
     held, _, _ = heights(3 * shapes[0] + 5 * shapes[1], shapes, np.ones(300), prior=[4, 4], strength=[1e9, 0])
     assert abs(held[0] - 4) < 1e-3 and abs(held[1] - 4) > 0.1
+
+
+def _features(rng, count):
+    """Features (FEATURES each) of no meaning but their ranges."""
+    ranges = {"share": (0, 1), "neighbor": (0, 10), "others": (0, 1), "snr": (1, 1e4), "residual": (0, 0.5),
+              "z_rms": (0.5, 5), "relative_ls": (0, 0.2), "realness": (0.3, 1), "prior_ratio": (0.5, 2),
+              "width": (5, 300), "near": (0, 3), "zero": (0, 1)}
+    out = np.column_stack([rng.uniform(*ranges[name], count) for name in FEATURES])
+    out[:, FEATURES.index("near")] = np.floor(out[:, FEATURES.index("near")])
+    out[:, FEATURES.index("zero")] = out[:, FEATURES.index("zero")] > 0.9
+    return out
+
+
+def test_a_calibration_has_the_quantiles_of_errors_as_wide_as_the_features_make_them():
+    rng = np.random.default_rng(0)
+
+    def made(count):
+        features = _features(rng, count)
+        sigma = 0.01 * (features[:, FEATURES.index("neighbor")] + 0.1)  # of a normal error: 1 and 2 sigma
+        return features, sigma * rng.normal(size=count)
+
+    calibration = fit_calibration(*made(3000))
+    features, errors = made(3000)
+    quantiles = calibrated(calibration, features)
+    for q in QUANTILES:
+        assert abs(np.mean(np.abs(errors) <= quantiles[str(q)]) - q) < 0.03
+    # of a wider error, a wider quantile
+    some = features[:2].copy()
+    some[:, FEATURES.index("neighbor")] = [0.0, 5.0]
+    low, high = calibrated(calibration, some)[str(QUANTILES[0])]
+    assert high > 10 * low
+
+
+def test_the_features_of_a_fit_tell_of_its_neighbors():
+    x = np.arange(400, dtype=float)
+    shape, other = _gauss(x, 150, 20), _gauss(x, 180, 20)
+    valid, noise, nothing = np.ones(400, bool), np.ones(400), np.zeros(400)
+    alone = dict(zip(FEATURES, fit_features(shape, 100.0, 80.0, [], nothing, nothing, noise, valid, 0.9, 0.01)))
+    assert alone["share"] == 0 and alone["neighbor"] == 0 and alone["near"] == 0 and alone["zero"] == 0
+    assert alone["snr"] == pytest.approx(100.0) and alone["prior_ratio"] == pytest.approx(1.25)
+    beside = dict(zip(FEATURES, fit_features(shape, 100.0, 80.0, [300.0 * other], nothing, nothing, noise, valid,
+                                             0.9, 0.01)))
+    # its range to 5 % ends 21 points out, where the neighbor is 1.7 x its top
+    assert 0.05 < beside["share"] < 0.5 and 1.5 < beside["neighbor"] < 2.0 and beside["near"] == 1
+    none = dict(zip(FEATURES, fit_features(shape, 0.0, 80.0, [], nothing, nothing, noise, valid, 0.9, 0.0)))
+    assert none["zero"] == 1 and none["snr"] == pytest.approx(80.0) and none["prior_ratio"] == 1
 
 
 def test_heights_come_through_a_baseline_off_by_an_offset_and_a_tilt_under_each_cluster():
