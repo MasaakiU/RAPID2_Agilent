@@ -16,6 +16,7 @@
 | `train.py` | 学習 | torch |
 | `evaluate_real.py` | 正解付けツールのラベルでの、実データの評価 | torch |
 | `export.py` | 重みを `.npz` に書き出す（アプリは torch なしで読む） | torch |
+| `export_onnx.py` | 前段と後段を ONNX に書き出し、onnxruntime の出力が torch と同じか確かめる（アプリが torch なしで動かす） | torch, onnx, onnxscript, onnxruntime |
 | `make_examples.py` | 合成データの例と図 | numpy, scipy, matplotlib |
 | `deconvolve.py` | 後段（ピークの分離）の、モデル以外の部品：候補、形の高さの最小二乗、面積の不確かさの補正、評価 | numpy, scipy |
 | `evaluate_deconvolution.py` | 後段の比べる基準（正解の形での最小二乗、EMG の当てはめ、アプリのやり方）と、学習した後段の、合成データでの評価 | numpy, scipy（窓の切り出しとモデルに torch） |
@@ -134,6 +135,20 @@ python evaluate_deconvolution.py --method model --checkpoint runs/2026-10-30_dec
 - `evaluate_deconvolution.py --method model` の `--real`、`--strength`、`--low` で、学習し直さずに、取る候補、引き寄せの強さ、その他として当てはめる候補を変えて比べられる（暫定は `--real 0.3 --strength 0.1`。`--low` を `--real` と同じにすると、その他としての当てはめは無し）。`low` より前の run の checkpoint は、`deconvolve_models.LOW` で評価する。
 - ベースラインとその他は、入力の log チャンネルの目盛りで出す（`model_options` の `background`、既定 `"log"`）。それより前の run（`2026-10-30_deconv_v6_100k_*`）の checkpoint は、線形として読む。
 - 速さ：エンコーダは前段の `transformer` と同じ。1 窓あたり、データ作りは前段（unet v5）を走らせるのと合わせて 34 ms ほど（Apple M 系の CPU 1 コア。前段だけで 20 ms）。バッチ 32 なら、`workers=14` で 1 秒に 13 バッチほど作れる。`steps_per_s` がそれに近ければ、データ作りが追いついていない。
+
+## ONNX への書き出し
+
+アプリは、前段と後段を onnxruntime で動かす（torch なし）。torch の書き出し（dynamo）で、CPU・float32 のまま書き出し、合成データの窓で、onnxruntime の出力・前段の候補・後段の面積が torch と同じかを確かめる。
+
+```sh
+python export_onnx.py --front runs/2026-10-29_unet_v5_200k/best.pt \
+    --later runs/2026-11-02_deconv_v6_sure_100k_unet_v5/best.pt --out runs/onnx_unet_v5 --check 50
+```
+
+- 出力：`front.onnx`、`later.onnx`、`manifest.json`（元の checkpoint、入出力の名前、窓の長さ 2048、前段の stride、opset、確かめた結果）。最後に `as torch: yes` と出れば一致している（出力の差が 1e-2 未満、前段の候補がすべて同じ、面積の相対差の 99 パーセンタイルが 1% 未満）。
+- 窓の長さは 2048 点に固定、後段の候補の数は 1〜1024 で可変。候補が 0 のときは後段を動かさない。
+- 後段は、候補の mask を渡さず（`candidate_mask=None`）、窓 1 つの候補をすべて使う形で書き出す（値で形の変わる処理を通らない）。
+- σ の補正（`calibrate_deconvolution.py` の JSON）は、ONNX とは別に、同じ組として置く。
 
 ## 後段の面積の不確かさの補正
 

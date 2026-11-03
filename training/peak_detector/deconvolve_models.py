@@ -180,7 +180,8 @@ class Deconvolver(nn.Module):
 
     def forward(self, x, candidates, candidate_mask, present, scaling) -> dict:
         """present (B, N): 1 where a peak may be (deconvolve.present); scaling (B, 3): the window's
-        (deconvolve_data.inputs)."""
+        (deconvolve_data.inputs); candidate_mask (B, K), or None of all there: then nothing is of a shape the values
+        make (of the ONNX export, export_onnx.py), and of no candidates, not to be run."""
         batch, _, length = x.shape
         features, tokens = self.encoder(F.pad(x, (0, (-length) % self.encoder.multiple)))
         features = features[..., :length]
@@ -201,8 +202,10 @@ class Deconvolver(nn.Module):
                  + self.query_widths(torch.stack([left.log(), right.log(), confidence], -1)))
         places = (torch.arange(tokens.shape[-1], device=x.device) + 0.5) * self.encoder.stride - 0.5
         memory = self.tokens(tokens.transpose(1, 2)) + sinusoid(places, self.d_model)
-        padding = ~candidate_mask
-        padding[:, 0] &= candidate_mask.any(1)  # of an item of none, one to attend to, of no use
+        padding = None
+        if candidate_mask is not None:
+            padding = ~candidate_mask
+            padding[:, 0] &= candidate_mask.any(1)  # of an item of none, one to attend to, of no use
         query = self.norm(self.decoder(query, memory, tgt_key_padding_mask=padding))
         out["real"] = self.real(query).squeeze(-1).float()
         signal = gather(x[:, :1], rows, apex.reshape(-1, 1)).reshape(batch, count)
@@ -210,22 +213,28 @@ class Deconvolver(nn.Module):
 
         # the candidates' places, of their realness as it is, for each to see the others
         points = torch.arange(length, device=x.device, dtype=torch.float32)
-        weight = torch.sigmoid(out["real"].detach()) * candidate_mask
+        weight = torch.sigmoid(out["real"].detach()) * (1.0 if candidate_mask is None else candidate_mask)
         bumps = torch.exp(-0.5 * (sides(points, apex[..., None], left[..., None], right[..., None]) / BUMP) ** 2)
         crowd = (bumps * weight[..., None]).sum(1, keepdim=True)
 
-        rows, there = rows.reshape(batch, count)[candidate_mask], candidate_mask
-        if not len(rows):
-            out["shape"] = trace.new_zeros(0, length)
-            return out
-        apex, left, right = apex[there][:, None], left[there][:, None], right[there][:, None]
+        if candidate_mask is None:
+            def there(values):  # of each candidate, one after another
+                return values.reshape(batch * count, *values.shape[2:])
+        else:
+            def there(values):
+                return values[candidate_mask]
+            rows = rows.reshape(batch, count)[candidate_mask]
+            if not len(rows):
+                out["shape"] = trace.new_zeros(0, length)
+                return out
+        apex, left, right = there(apex)[:, None], there(left)[:, None], there(right)[:, None]
         z = torch.linspace(-self.reach, self.reach, self.grid, device=x.device)
         place = apex + torch.where(z < 0, z * left, z * right)
         width = torch.where(z < 0, left.log(), right.log())
         channels = torch.cat([gather(features, rows, place).float(), gather(x, rows, place), gather(crowd, rows, place),
                               torch.stack([z.expand_as(place) / self.reach, width / 5], -1)], -1)
         h = self.shape_in(channels.transpose(1, 2))
-        scale, shift = self.film(query[there]).unsqueeze(-1).chunk(2, 1)
+        scale, shift = self.film(there(query)).unsqueeze(-1).chunk(2, 1)
         hidden = self.shape_blocks(h * (1 + scale) + shift)
         with torch.autocast(x.device.type, enabled=False):
             rise, fall, top = self.shape_out(hidden.float()).unbind(1)

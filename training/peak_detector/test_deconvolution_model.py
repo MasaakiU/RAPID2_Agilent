@@ -285,6 +285,47 @@ def test_of_a_calibration_the_peaks_taken_have_its_sigma_and_interval_and_the_le
         assert peak["scale"] == (peak["area"] if peak["area"] > 0 else peak["scale"])
 
 
+def test_of_all_its_candidates_the_later_stage_of_no_mask_is_as_of_one_and_exports_of_any_number():
+    from export_onnx import LATER_INPUTS, LaterOut
+
+    model = _model()
+    item = next(item for item, _window, candidates in _items(10) if len(candidates) >= 2)
+    batch = collate([item])
+    with torch.no_grad():
+        masked = run(model, batch, "cpu")
+        free = model(batch["x"], batch["candidates"], None, batch["present"], batch["scaling"])
+    for name in masked:
+        torch.testing.assert_close(free[name], masked[name], atol=1e-5, rtol=1e-4)
+    count = torch.export.Dim("candidates", min=1, max=64)
+    program = torch.export.export(LaterOut(model), tuple(batch[name] for name in LATER_INPUTS),
+                                  dynamic_shapes={"x": None, "candidates": {1: count}, "present": None,
+                                                  "scaling": None})
+    for many in (1, 7):
+        candidates = batch["candidates"][:, :1].repeat(1, many, 1)
+        candidates[0, :, 0] = torch.linspace(50, 450, many)
+        given = (batch["x"], candidates, batch["present"], batch["scaling"])
+        with torch.no_grad():
+            for ours, theirs in zip(LaterOut(model)(*given), program.module()(*given)):
+                torch.testing.assert_close(theirs, ours, atol=1e-5, rtol=1e-4)
+        assert program.module()(*given)[-1].shape == (many, batch["x"].shape[-1])
+
+
+def test_the_onnx_export_is_as_torch(tmp_path, front):
+    pytest.importorskip("onnxscript")
+    pytest.importorskip("onnxruntime")
+    import export_onnx
+    import train_deconvolution
+
+    assert train_deconvolution.main(["--config", str(TINY), "--out", str(tmp_path / "run"), "--device", "cpu",
+                                      "--set", "steps=2", "validation=2", "eval_every=2", "log_every=2",
+                                      f"front={front}"]) == 0
+    assert export_onnx.main(["--front", front, "--later", str(tmp_path / "run" / "last.pt"),
+                             "--out", str(tmp_path / "onnx"), "--check", "3"]) == 0
+    manifest = json.loads((tmp_path / "onnx" / "manifest.json").read_text())
+    assert manifest["length"] == export_onnx.LENGTH and manifest["check"]["windows of other candidates"] == 0
+    assert (tmp_path / "onnx" / "front.onnx").exists() and (tmp_path / "onnx" / "later.onnx").exists()
+
+
 def test_of_fronts_each_window_takes_ones_and_the_validation_set_each_in_turn():
     def given(apex):
         return lambda _x, _length: [{"apex": apex, "confidence": 0.5, "left": 5.0, "right": 5.0}]

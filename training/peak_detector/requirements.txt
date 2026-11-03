@@ -3,3 +3,6 @@ numpy>=1.26
 scipy>=1.11
 matplotlib>=3.8  # make_examples.py only
 pytest>=8
+onnx>=1.17  # export_onnx.py only, with onnxscript and onnxruntime
+onnxscript
+onnxruntime>=1.20
