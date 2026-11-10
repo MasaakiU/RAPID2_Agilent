@@ -86,6 +86,7 @@ def test_starting_publishes_the_address_and_shows_the_letter(serving):
     assert view.windowTitle() == f"RAPID2 Agilent — {controller.label}"
     assert view.ai_assistant_access_action.isChecked()
     assert controller.client_command().startswith("claude mcp add rapid2-agilent -- ")
+    assert controller.client_command("codex").startswith("codex mcp add rapid2-agilent -- ")
     assert os.access(controller.launcher_path, os.X_OK)
     catalog = catalog_file.read_catalog()
     names = [tool["name"] for tool in catalog["tools"]]
@@ -248,3 +249,50 @@ def test_targets_are_added_shown_imported_and_taken_for_export_in_the_window(win
 
     snapshot = context.target_snapshot()
     assert snapshot["paths"] == [path] and snapshot["targets"] == targets.targets and snapshot["left_out"] == []
+
+
+def test_a_rpd_file_is_opened_through_mcp_of_the_spectra_it_holds(window, tmp_path):
+    from RAPID2_Agilent.io.rpd_file import write_rpd
+    from RAPID2_Agilent.models.rpd_model import RPDFileModel
+    from tests.test_rpd_file import _data
+
+    _app, _view, presenter = window
+    context = ViewerContext(presenter)
+    write_rpd(tmp_path / "x.rpd", _data("discrete"))
+    write_rpd(tmp_path / "y.rpd", _data("continuous"))
+    status = context.open_files([str(tmp_path / "x.rpd")])
+    assert [(file["name"], file["spectra"]) for file in status["files"]] == [("x.rpd", "centroid")]
+    assert [type(model) for model in presenter.data_stack_presenter.models] == [RPDFileModel]
+    # an export reads it too, rather than leaving it out
+    snapshot = context.target_snapshot()
+    assert len(snapshot["paths"]) == 1 and snapshot["spectra"] == ["centroid"] and snapshot["left_out"] == []
+    with pytest.raises(ToolError, match="y.rpd has no centroid spectra"):
+        context.open_files([str(tmp_path / "y.rpd")], "centroid")
+    with pytest.raises(ToolError, match="No .rpd file"):
+        context.open_files([str(tmp_path / "missing.rpd")])
+
+
+def test_files_are_opened_through_mcp_of_the_spectra_asked_for(window, tmp_path):
+    from RAPID2_Agilent.models.rpd_model import AgilentCentroidModel, AgilentDModel
+
+    _app, _view, presenter = window
+    context = ViewerContext(presenter)
+    path, copy = str(require(DATA_PATH)), str(require(DATA_DIR / "dummy_RP_2min_neg_copy.d"))
+    assert context.open_files([path], "centroid")["opened"] == [path]
+    status = context.open_files([copy])
+    assert [(file["name"], file["spectra"]) for file in status["files"]] == [
+        ("dummy_RP_2min_neg.d", "centroid"), ("dummy_RP_2min_neg_copy.d", "profile"),
+    ]
+    assert [type(model) for model in presenter.data_stack_presenter.models] == [AgilentCentroidModel, AgilentDModel]
+    # an export reads each as the window has it
+    assert context.target_snapshot()["spectra"] == ["centroid", "profile"]
+
+    # of a run without centroid spectra, none is opened, and no dialog stops the call
+    (tmp_path / "x.d" / "AcqData").mkdir(parents=True)
+    (tmp_path / "x.d" / "AcqData" / "MSProfile.bin").write_bytes(b"x")
+    with pytest.raises(ToolError, match="x.d has no centroid spectra"):
+        context.open_files([str(tmp_path / "x.d")], "centroid")
+    # one that cannot be read is told of, not shown in a dialog
+    with pytest.raises(ToolError, match="x.d could not be opened"):
+        context.open_files([str(tmp_path / "x.d")])
+    assert len(presenter.data_stack_presenter.models) == 2

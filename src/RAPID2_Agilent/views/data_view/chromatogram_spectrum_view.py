@@ -518,9 +518,19 @@ class SpectrumWindow(MyPlotWidget):
         # the m/z of the peak tops, clear of the plot's labels other than the cursor's, which moves with the mouse
         self.peak_labels = PeakLabelItem(self.vb(), obstacles=(self.exp_label, self.top_right_label, self.warning_label))
 
-    def set_primary_plot_data(self, x, y, **kwargs):
-        super().set_primary_plot_data(x, y, **kwargs)
-        self.peak_labels.set_spectrum(x, y)
+    def set_primary_plot_data(self, x, y, *, spectra: str = "profile", **kwargs):
+        """spectra, MSData's: of centroids, each is drawn as a vertical line from 0 (not joined to its neighbours)
+        and labelled as a peak."""
+        if spectra == "centroid":
+            x_arr, y_arr = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+            sticks_x = np.repeat(x_arr, 2)
+            sticks_y = np.zeros(2 * len(y_arr))
+            sticks_y[1::2] = y_arr
+            kwargs["connect"] = "pairs"
+            super().set_primary_plot_data(sticks_x, sticks_y, **kwargs)
+        else:
+            super().set_primary_plot_data(x, y, **kwargs)
+        self.peak_labels.set_spectrum(x, y, spectra)
 
     def _show_warning(self):
         super()._show_warning()

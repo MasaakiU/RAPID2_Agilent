@@ -26,7 +26,7 @@ from .transport import McpHttpServer
 
 log = logging.getLogger(__name__)
 
-SERVER_NAME = "rapid2-agilent"
+SERVER_NAME = launcher.SERVER_NAME
 ACCESS_REVOKED_MESSAGE = (
     "AI access to RAPID2 has been turned off. Ask the user to turn it back on "
     "(Tools > AI Assistant Access), then retry."
@@ -109,8 +109,9 @@ class McpController(QObject):
 
         return self._launcher_path
 
-    def client_command(self):
-        """The line a user runs once to register RAPID2 with Claude Code.
+    def client_command(self, client="claude"):
+        """The line a user runs once to register RAPID2 with Claude Code
+        (`client` "claude") or Codex ("codex").
 
         Unlike the address and the token, this does not go stale: it names the
         launcher, and the launcher finds whichever RAPID2 is running at the time.
@@ -118,7 +119,7 @@ class McpController(QObject):
 
         if not self.running or self._launcher_path is None:
             return None
-        return launcher.registration_command(self._launcher_path, SERVER_NAME)
+        return launcher.registration_command(self._launcher_path, SERVER_NAME, client)
 
     # -- guards ----------------------------------------------------------
     def _guarded(self, call, access):

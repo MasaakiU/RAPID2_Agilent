@@ -10,7 +10,7 @@ is to be replaceable by a fake in tests and to keep the reachable surface
 small enough to audit -- an MCP tool is remote input. They take an `instance`
 target, and every reply names the window that answered.
 
-*Analysis tools* read .d folders by path through `services` and never touch
+*Analysis tools* read runs (.d folders, .rpd files) by path through `services` and never touch
 the window. They run on the request thread, one at a time: a minute of
 alignment on the main thread would freeze the window for that minute. They
 take no target, because any window gives the same answer.
@@ -24,6 +24,8 @@ from __future__ import annotations
 import base64
 import threading
 
+from pathlib import Path
+
 from .. import services
 from ..alignment.config import OPTIONS as ALIGNMENT_OPTIONS
 from ..services import operations, reports
@@ -36,7 +38,7 @@ from .trail import traced
 
 # Bumped by hand when the tool set changes, so that a reader of the registry
 # can notice two running builds disagree without listing tool names.
-TOOLSET_VERSION = 3
+TOOLSET_VERSION = 5
 
 # What the services raise for a wrong path or option. The message is the
 # answer, so it travels as a failed tool result rather than as a crash.
@@ -78,6 +80,7 @@ class ViewerContext:
                 "index": index,
                 "name": model.file_path.name,
                 "path": str(model.file_path),
+                "spectra": model.spectra,
                 "scan_types": reports.scan_types(model),
             }
             for index, model in enumerate(stack.models)
@@ -139,34 +142,50 @@ class ViewerContext:
         return {"imported": len(targets), "replaced": replace and bool(existing), "targets": len(self._targets.targets), "notes": notes}
 
     def target_snapshot(self):
-        """What an export of the window's targets reads: the targets, the .d folders open, the MS2 merge, and the
-        files' own RT windows of the targets, as File > Export Targets takes them."""
+        """What an export of the window's targets reads: the targets, the runs open (.d folders, .rpd files) and the
+        spectra each is read of, the MS2 merge, and the files' own RT windows of the targets, as File > Export
+        Targets takes them."""
         models = self._stack.models
         run_peaks = self._presenter.run_peaks_to_export()
+        readable = [model for model in models if _is_run(model.file_path)]
         return {
             "targets": self._targets.targets,
-            "paths": [str(model.file_path) for model in models if model.file_path.suffix.lower() == ".d"],
-            "left_out": [model.file_path.name for model in models if model.file_path.suffix.lower() != ".d"],
+            "paths": [str(model.file_path) for model in readable],
+            "spectra": [model.spectra for model in readable],
+            "left_out": [model.file_path.name for model in models if not _is_run(model.file_path)],
             "merge_ppm": self._merge_ppm,
             # a copy, read while the window goes on
             "run_peaks": None if run_peaks is None else run_peaks.copy(),
         }
 
-    def open_files(self, folder_paths):
+    def open_files(self, run_paths, spectra=None):
+        """Open the runs not open yet: a .d folder of its profile or its centroid spectra (a run of centroid spectra
+        only, of them), a .rpd file of what it holds. One that has not the centroid spectra asked for opens none;
+        one that cannot be read stops there."""
         open_paths = {str(model.file_path) for model in self._stack.models}
         wanted = []
-        for folder_path in folder_paths:
+        for run_path in run_paths:
             try:
-                path = services.run_path(folder_path)
+                path = services.run_path(run_path)
+                if not _is_run(path):
+                    raise ToolError(f"Not a .d folder or a .rpd file: {path}")
+                if spectra == "centroid" and "centroid" not in services.stored_spectra(path):
+                    raise ToolError(f"{path.name} has no centroid spectra: open it of its profile")
             except ValueError as exc:
                 raise ToolError(str(exc)) from exc
-            if path.suffix.lower() != ".d":
-                raise ToolError(f"Not a .d folder: {path}")
             if str(path) not in open_paths and str(path) not in wanted:
                 wanted.append(str(path))
-        if wanted:
-            self._presenter.open_d_folders_clicked(wanted)
-        return {"opened": wanted, **self.status()}
+        opened = []
+        for path in wanted:
+            try:
+                if services.is_rpd(path):
+                    self._presenter.open_rpd_file(path)
+                else:
+                    self._presenter.open_d_folder(path, centroid=spectra == "centroid")
+            except (OSError, ValueError) as exc:
+                raise ToolError(f"{Path(path).name} could not be opened ({len(opened)} opened before it): {exc}") from exc
+            opened.append(path)
+        return {"opened": opened, **self.status()}
 
     def set_view(
         self, *, rt_window=None, mz_window=None, trace_type=None, ms_level=False, precursor_mz=None, collision_energy=None,
@@ -249,6 +268,11 @@ def _listed(window):
     return None if window is None else [float(window[0]), float(window[1])]
 
 
+def _is_run(path):
+    """Whether the services read a file the window has open: a .d folder or a .rpd file."""
+    return services.is_rpd(path) or Path(path).suffix.lower() == ".d"
+
+
 def _range(arguments, low, high, default_low):
     lo, hi = arguments.get(low), arguments.get(high)
     if lo is None and hi is None:
@@ -274,7 +298,19 @@ def _window(arguments, low, high):
 # -- schemas -------------------------------------------------------------
 _NO_ARGUMENTS = {"type": "object", "properties": {}, "additionalProperties": False}
 
-PATH_PROPERTY = {"type": "string", "description": "Path of an Agilent .d folder."}
+PATH_PROPERTY = {"type": "string", "description": "Path of a run: an Agilent .d folder, or a RAPID2 .rpd file."}
+D_PATH_PROPERTY = {"type": "string", "description": "Path of an Agilent .d folder."}
+SPECTRA_PROPERTY = {
+    "type": "string",
+    "enum": list(services.SPECTRA),
+    "description": (
+        "The spectra to read: the profile, or the centroid spectra stored at acquisition, about 1/17 of the "
+        "data and much quicker to read from a network drive (rapid2_describe_run gives the sizes). Left out, "
+        "the profile, or the centroid spectra of a run that holds only them; a .rpd file holds one of the two. "
+        "Centroid intensities are peak heights: an XIC, height or area of them is about 0.15 to 0.4 of the "
+        "profile's, so compare only values read of the same spectra. Weak ions may be missing from the centroids."
+    ),
+}
 MS_LEVEL_PROPERTY = {
     "type": ["integer", "null"],
     "minimum": 1,
@@ -535,6 +571,8 @@ def _quantify(arguments):
         merge_ppm=arguments.get("merge_ppm", 0.0),
         rpd_csv_file=arguments.get("rpd_csv"),
         max_rows=arguments.get("max_rows", 200),
+        spectra=arguments.get("spectra"),
+        saturation_height=arguments.get("saturation_height"),
     )
     return {**result, "notes": notes} if notes else result
 
@@ -554,34 +592,48 @@ def analysis_tools(analysis):
         _analysis_tool(
             analysis,
             "rapid2_find_runs",
-            "Find .d folders",
-            "List the Agilent .d folders under a directory, recursively. Read-only.",
-            lambda arguments: {"runs": services.find_runs(arguments["directory"])},
-            _object({"directory": {"type": "string"}}, required=("directory",)),
+            "Find runs",
+            (
+                "List the runs under a directory, recursively: Agilent .d folders and RAPID2 .rpd files; of a "
+                ".d folder also its sample name, sample type, position and acquisition time (acquired_at), as "
+                "MassHunter's worklist wrote them. order: by path, or by acquisition (the injection order), "
+                "runs not told of it last. Read-only."
+            ),
+            lambda arguments: {"runs": services.find_runs(arguments["directory"], arguments.get("order", "path"))},
+            _object(
+                {
+                    "directory": {"type": "string"},
+                    "order": {"type": "string", "enum": list(services.RUN_ORDERS), "default": "path"},
+                },
+                required=("directory",),
+            ),
         ),
         _analysis_tool(
             analysis,
             "rapid2_describe_run",
             "Describe a run",
             (
-                "Scan count, RT range (min), scan types (polarity and MS level), "
-                "profile m/z range and the number of MS2 precursors of a .d folder. Read-only."
+                "The sample information of a .d folder as MassHunter wrote it (sample name, type and position, "
+                "method, injection volume, dilution, acquisition time, instrument, ...), and the scan count, RT "
+                "range (min), scan types (polarity and MS level), m/z range of the spectra read and the number "
+                "of MS2 precursors of a run, and the spectra it holds (profile, centroid; a .rpd file one of "
+                "them) with the bytes of each. Read-only."
             ),
-            lambda arguments: reports.describe_run(runs.get(arguments["path"])),
-            _object({"path": PATH_PROPERTY}, required=("path",)),
+            lambda arguments: reports.describe_run(runs.get(arguments["path"], arguments.get("spectra"))),
+            _object({"path": PATH_PROPERTY, "spectra": SPECTRA_PROPERTY}, required=("path",)),
         ),
         _analysis_tool(
             analysis,
             "rapid2_list_precursors",
             "List MS2 precursors",
             (
-                "The precursors and collision energies of the MS2 scans of a .d folder, with "
+                "The precursors and collision energies of the MS2 scans of a run, with "
                 "their isolation width and scan count, by precursor m/z; one entry per "
                 "precursor and CE. Pass one to the extract tools as precursor_mz and "
                 "collision_energy. Read-only."
             ),
             lambda arguments: reports.ms2_precursors(
-                runs.get(arguments["path"]),
+                runs.get(arguments["path"], arguments.get("spectra")),
                 merge_ppm=arguments.get("merge_ppm", 0.0),
                 mz_range=_range(arguments, "mz_min", "mz_max", 0.0),
                 max_items=arguments.get("max_items", 200),
@@ -590,6 +642,7 @@ def analysis_tools(analysis):
             _object(
                 {
                     "path": PATH_PROPERTY,
+                    "spectra": SPECTRA_PROPERTY,
                     "merge_ppm": MERGE_PPM_PROPERTY,
                     "polarity": POLARITY_PROPERTY,
                     "mz_min": {"type": "number", "description": "Lowest precursor m/z to list."},
@@ -612,10 +665,39 @@ def analysis_tools(analysis):
         ),
         _analysis_tool(
             analysis,
+            "rapid2_calculate_isotope_pattern",
+            "Calculate an isotope pattern",
+            (
+                "The isotope pattern of the ion of a formula and an adduct, by nominal mass, from the natural "
+                "abundances (NIST): of each M+k, the mean m/z of its isotopologues, its fraction of all the ions "
+                "and its abundance relative to the most abundant (relative). Atoms written as an isotope, e.g. "
+                "C5H5[2H]9NO or [13C]6H12O6, are of that isotope alone. Use it to expect a compound's M+1, M+2, "
+                "..., or to correct isotopologues for natural abundance."
+            ),
+            lambda arguments: reports.isotope_pattern(
+                arguments["formula"], arguments["adduct"], min_relative=arguments.get("min_relative", 0.001),
+            ),
+            _object(
+                {
+                    "formula": FORMULA_PROPERTY,
+                    "adduct": {"type": "string", "description": "Adduct, e.g. \"[M+H]+\", \"[M+2H]2+\"."},
+                    "min_relative": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0.001,
+                        "description": "Peaks less abundant than this, relative to the most abundant, are left out.",
+                    },
+                },
+                required=("formula", "adduct"),
+            ),
+        ),
+        _analysis_tool(
+            analysis,
             "rapid2_extract_xic",
             "Extract an XIC",
             (
-                "Extracted ion chromatogram of a .d folder: the summed intensity within "
+                "Extracted ion chromatogram of a run: the summed intensity within "
                 "mz ± tolerance per scan; give mz, or formula and adduct for the m/z of their "
                 "ion. An adduct, or polarity, chooses the scans of that polarity. With "
                 "precursor_mz, of the MS2 scans of that precursor, and mz is a product ion. "
@@ -624,7 +706,7 @@ def analysis_tools(analysis):
                 "the trace. Read-only; use rapid2_set_view to show it to the user."
             ),
             lambda arguments: reports.xic(
-                runs.get(arguments["path"]),
+                runs.get(arguments["path"], arguments.get("spectra")),
                 arguments.get("mz"),
                 arguments.get("tolerance", 10.0),
                 arguments.get("unit", "ppm"),
@@ -638,6 +720,7 @@ def analysis_tools(analysis):
             _object(
                 {
                     "path": PATH_PROPERTY,
+                    "spectra": SPECTRA_PROPERTY,
                     "mz": {"type": "number", "exclusiveMinimum": 0},
                     "formula": FORMULA_PROPERTY,
                     "adduct": ADDUCT_PROPERTY,
@@ -658,11 +741,12 @@ def analysis_tools(analysis):
             "rapid2_extract_trace",
             "Extract a TIC or BPC",
             (
-                "Total ion chromatogram (TIC) or base peak chromatogram (BPC) of a .d folder; "
-                "with precursor_mz, of the MS2 scans of that precursor. Read-only."
+                "Total ion chromatogram (TIC) or base peak chromatogram (BPC) of a run, "
+                "from its scan records (of the profile, whichever spectra are read); with "
+                "precursor_mz, of the MS2 scans of that precursor. Read-only."
             ),
             lambda arguments: reports.trace(
-                runs.get(arguments["path"]),
+                runs.get(arguments["path"], arguments.get("spectra")),
                 arguments.get("trace_type", "TIC"),
                 polarity=arguments.get("polarity"),
                 rt_range=_range(arguments, "rt_min", "rt_max", float("-inf")),
@@ -672,6 +756,7 @@ def analysis_tools(analysis):
             _object(
                 {
                     "path": PATH_PROPERTY,
+                    "spectra": SPECTRA_PROPERTY,
                     "trace_type": {"type": "string", "enum": ["TIC", "BPC"], "default": "TIC"},
                     "polarity": POLARITY_PROPERTY,
                     "ms_level": MS_LEVEL_PROPERTY,
@@ -688,13 +773,14 @@ def analysis_tools(analysis):
             "rapid2_extract_spectrum",
             "Extract a spectrum",
             (
-                "The most intense profile peaks (local maxima) of the spectrum averaged "
+                "The most intense peaks (of a profile, its local maxima; of centroid spectra, "
+                "the centroids) of the spectrum averaged "
                 "(mean) or summed over the scans in rt ± rt_tolerance (min), or of the "
                 "scan nearest to rt when none is in the window. With precursor_mz, the "
                 "product-ion spectrum of the MS2 scans of that precursor. Read-only."
             ),
             lambda arguments: reports.spectrum(
-                runs.get(arguments["path"]),
+                runs.get(arguments["path"], arguments.get("spectra")),
                 arguments["rt"],
                 arguments.get("rt_tolerance", 0.0),
                 mode=arguments.get("mode", "mean"),
@@ -706,6 +792,7 @@ def analysis_tools(analysis):
             _object(
                 {
                     "path": PATH_PROPERTY,
+                    "spectra": SPECTRA_PROPERTY,
                     "rt": {"type": "number", "description": "RT, in minutes."},
                     "rt_tolerance": {"type": "number", "minimum": 0, "default": 0.0},
                     "polarity": POLARITY_PROPERTY,
@@ -730,17 +817,32 @@ def analysis_tools(analysis):
                 "writes it, or RAPID2's), or described in targets, or both. Each run's scans of the "
                 "target's adduct polarity, MS level (MS2: precursor and CE) and RT window are used. "
                 "rpd_csv also writes the rows as a .rpd.csv file, which must not exist yet. Use it to "
-                "compare a compound across runs."
+                "compare a compound across runs. Each row has warnings to look at again before trusting it "
+                "(the peak top at the first or last scan of the RT window, and, with saturation_height, a "
+                "height at or above it), and flagged lists the rows with any: look at "
+                "their XIC (rapid2_extract_xic, or the window: rapid2_select_target and rapid2_capture)."
             ),
             lambda arguments: _quantify(arguments),
             _object(
                 {
-                    "runs": {"type": "array", "items": PATH_PROPERTY, "description": "Paths of .d folders."},
+                    "runs": {"type": "array", "items": PATH_PROPERTY, "description": "Paths of runs: .d folders, .rpd files."},
+                    "spectra": {
+                        **SPECTRA_PROPERTY,
+                        "description": "Of every run (left out, those of the first run, for all): " + SPECTRA_PROPERTY["description"],
+                    },
                     "targets_file": {"type": "string", "description": "A .rpd.csv file of targets."},
                     "targets": {"type": "array", "items": _object(TARGET_PROPERTIES, required=TARGET_REQUIRED)},
                     "merge_ppm": MERGE_PPM_PROPERTY,
                     "rpd_csv": {"type": "string", "description": "Also write the rows to this new .rpd.csv file."},
                     "max_rows": {"type": "integer", "minimum": 1, "default": 200, "description": "Rows returned; the file has all."},
+                    "saturation_height": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": (
+                            "A height from which the detector may have saturated, to warn of; it differs by "
+                            "instrument and spectra, and is not known to RAPID2. Left out, no such warning."
+                        ),
+                    },
                 },
                 required=("runs",),
             ),
@@ -750,14 +852,14 @@ def analysis_tools(analysis):
             "rapid2_map_spots",
             "Find the strongest spots of a run",
             (
-                "The most intense spots of the m/z x RT map of a .d folder's MS1 scans, as RAPID2's "
+                "The most intense spots of the m/z x RT map of a run's MS1 scans, as RAPID2's "
                 "m/z-RT Map shows it (bins of about 100 ppm): their RT, the m/z of the highest "
-                "profile point in the spot and its intensity, apart from one another. A first look "
+                "data point in the spot and its intensity, apart from one another. A first look "
                 "at what a run holds; follow up with rapid2_extract_xic or rapid2_extract_spectrum. "
                 "Read-only."
             ),
             lambda arguments: reports.map_spots(
-                runs.get(arguments["path"]),
+                runs.get(arguments["path"], arguments.get("spectra")),
                 top_n=arguments.get("top_n", 20),
                 rt_range=_range(arguments, "rt_min", "rt_max", float("-inf")),
                 mz_range=_range(arguments, "mz_min", "mz_max", 0.0),
@@ -765,6 +867,7 @@ def analysis_tools(analysis):
             _object(
                 {
                     "path": PATH_PROPERTY,
+                    "spectra": SPECTRA_PROPERTY,
                     "top_n": TOP_N_SPOTS_PROPERTY,
                     "rt_min": RT_MIN_PROPERTY,
                     "rt_max": RT_MAX_PROPERTY,
@@ -795,11 +898,16 @@ def analysis_tools(analysis):
                 min_fold_change=arguments.get("min_fold_change", 2.0),
                 rt_range=_range(arguments, "rt_min", "rt_max", float("-inf")),
                 mz_range=_range(arguments, "mz_min", "mz_max", 0.0),
+                spectra=arguments.get("spectra"),
             ),
             _object(
                 {
                     "reference": PATH_PROPERTY,
                     "query": PATH_PROPERTY,
+                    "spectra": {
+                        **SPECTRA_PROPERTY,
+                        "description": "Of both runs (left out, those of the reference, for both): " + SPECTRA_PROPERTY["description"],
+                    },
                     "top_n": TOP_N_SPOTS_PROPERTY,
                     "min_fold_change": {
                         "type": "number",
@@ -820,20 +928,20 @@ def analysis_tools(analysis):
             "rapid2_suggest_alignment_scales",
             "Suggest asinh scales for alignment",
             (
-                "Candidate asinh scales from the binned MS1 intensities of a .d folder, "
-                "for rapid2_align_runs; none is chosen for you. max_scans limits the "
-                "scans read. Read-only."
+                "Candidate asinh scales from the binned MS1 intensities of a .d folder's "
+                "profile, for rapid2_align_runs; none is chosen for you. max_scans limits "
+                "the scans read. Read-only."
             ),
             lambda arguments: reports.scale_candidates(runs, arguments["path"], **_alignment_options(arguments)),
-            _object({"path": PATH_PROPERTY, **SCALE_OPTION_PROPERTIES}, required=("path",)),
+            _object({"path": D_PATH_PROPERTY, **SCALE_OPTION_PROPERTIES}, required=("path",)),
         ),
         _analysis_tool(
             analysis,
             "rapid2_align_runs",
             "Align the RTs of two runs",
             (
-                "Map the query run's RTs onto the reference's from the raw MS1 scans "
-                "(no peak picking), and save mapping.json, metadata.json and a "
+                "Map the query run's RTs onto the reference's from the raw MS1 scans of "
+                "their profile (no peak picking), and save mapping.json, metadata.json and a "
                 "diagnostics figure to a new output_dir. Returns the RT shift range in "
                 "seconds. Two full runs can take minutes; max_scans limits the scans."
             ),
@@ -842,8 +950,8 @@ def analysis_tools(analysis):
             ),
             _object(
                 {
-                    "reference": PATH_PROPERTY,
-                    "query": PATH_PROPERTY,
+                    "reference": D_PATH_PROPERTY,
+                    "query": D_PATH_PROPERTY,
                     "output_dir": {"type": "string", "description": "A directory with no alignment result in it yet."},
                     "scale": {"type": "number", "exclusiveMinimum": 0, "description": "From rapid2_suggest_alignment_scales."},
                     **SCALE_OPTION_PROPERTIES,
@@ -936,7 +1044,8 @@ def build_registry(context, analysis, *, run_on_main_thread, identity=None):
         "rapid2_get_status",
         "Get the RAPID2 window's state",
         (
-            "What the RAPID2 window shows: the open .d files with their scan "
+            "What the RAPID2 window shows: the open files with the spectra "
+            "read (profile or centroid) and their scan "
             "types, the selected RT window (min) and m/z window, the trace type "
             "(XIC, TIC or BPC), the MS level (null for all scans), the precursor "
             "and CE of the MS2 scans shown, the MS2 precursors of the files as the "
@@ -946,20 +1055,24 @@ def build_registry(context, analysis, *, run_on_main_thread, identity=None):
     )
     viewer(
         "rapid2_open_files",
-        "Open .d folders in RAPID2",
+        "Open runs in RAPID2",
         (
-            "Open Agilent .d folders in the RAPID2 window, below the files "
-            "already open; a folder already open is not opened again. Returns "
-            "the window's state afterwards, as rapid2_get_status."
+            "Open Agilent .d folders or RAPID2 .rpd files in the RAPID2 window, "
+            "below the files already open: a .d folder of its profile or (spectra) "
+            "its centroid spectra, as the window's Open dialog asks, a .rpd file of "
+            "the spectra it holds; one already open is not opened again. Returns "
+            "the window's state afterwards, as rapid2_get_status, which gives each "
+            "file's spectra."
         ),
-        lambda arguments: context.open_files(arguments["paths"]),
+        lambda arguments: context.open_files(arguments["paths"], arguments.get("spectra")),
         input_schema=_object(
             {
                 "paths": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Paths of .d folders.",
-                }
+                    "description": "Paths of .d folders or .rpd files.",
+                },
+                "spectra": SPECTRA_PROPERTY,
             },
             required=("paths",),
         ),
@@ -1088,11 +1201,12 @@ def build_registry(context, analysis, *, run_on_main_thread, identity=None):
                 run_peaks=snapshot["run_peaks"],
                 rpd_csv_file=arguments["path"],
                 max_rows=arguments.get("max_rows", 200),
+                spectra=snapshot["spectra"],
             )
         except EXPECTED_FAILURES as exc:
             raise ToolError(str(exc)) from exc
         if snapshot["left_out"]:
-            result["left_out"] = snapshot["left_out"]  # not .d folders, which only the window can read
+            result["left_out"] = snapshot["left_out"]  # neither .d folders nor .rpd files, which only the window can read
         return result
 
     tools.add(
@@ -1100,9 +1214,9 @@ def build_registry(context, analysis, *, run_on_main_thread, identity=None):
             name="rapid2_export_targets",
             title="Export the targets of RAPID2",
             description=(
-                "Write the RAPID2 window's targets and their values in its open .d files to a new "
-                ".rpd.csv file, as File > Export Targets does, and return the rows, as "
-                "rapid2_quantify_targets does."
+                "Write the RAPID2 window's targets and their values in its open files, each read "
+                "of the spectra the window has it of, to a new .rpd.csv file, as File > Export Targets "
+                "does, and return the rows, as rapid2_quantify_targets does."
             ),
             input_schema=export_schema,
             handler=traced(_targeted(export_targets, identity), "rapid2_export_targets"),

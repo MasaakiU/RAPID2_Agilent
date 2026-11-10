@@ -146,3 +146,20 @@ def test_model_metadata_tracks_reader_without_copied_state():
         assert model.spectrum_param_index == 0
     finally:
         model.close()
+
+
+def test_load_tells_of_the_scans_read_and_stops_where_that_raises():
+    told = []
+    with AgilentReader() as reader:
+        reader.load(require(DATA_PATH), lambda done, total: told.append((done, total)))
+        assert told == [(done, reader.N_scans) for done in range(1, reader.N_scans + 1)]
+
+    class Stop(Exception):
+        pass
+
+    def stop_at_3(done, _total):
+        if done == 3:
+            raise Stop
+
+    with AgilentReader() as reader, pytest.raises(Stop):
+        reader.load(DATA_PATH, stop_at_3)

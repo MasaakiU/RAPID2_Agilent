@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
     about_requested = pyqtSignal()
     preferences_requested = pyqtSignal()
     ai_assistant_access_toggled = pyqtSignal(bool)
-    copy_ai_assistant_command_requested = pyqtSignal()
+    copy_ai_assistant_command_requested = pyqtSignal(str)  # the client: "claude" or "codex"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("File")
         self._add_menu_action(file_menu, "Open RPD file", self.open_rpd_files_requested, "Ctrl+Shift+O")
         self._add_menu_action(file_menu, "Open .d folder", self.open_d_folders_requested, "Ctrl+O")
-        not_implemented.append(self._add_menu_action(file_menu, "Convert Files", self.convert_files_requested, "Ctrl+Shift+C"))
+        self._add_menu_action(file_menu, "Convert Files", self.convert_files_requested, "Ctrl+Shift+C")
         self._add_menu_action(file_menu, "Export Targets", self.export_targets_requested, "Ctrl+E")
         self._add_menu_action(file_menu, "Load Targets", self.load_targets_requested, "Ctrl+L")
         not_implemented.append(self._add_menu_action(file_menu, "Export Images for Current Targets", self.export_images_requested, "Ctrl+Shift+E"))
@@ -126,7 +126,12 @@ class MainWindow(QMainWindow):
         self.ai_assistant_access_action = tools_menu.addAction("AI Assistant Access")
         self.ai_assistant_access_action.setCheckable(True)
         self.ai_assistant_access_action.toggled.connect(lambda checked: self.ai_assistant_access_toggled.emit(checked))
-        self.copy_ai_assistant_command_action = self._add_menu_action(tools_menu, "Copy AI Assistant Setup Command", self.copy_ai_assistant_command_requested)
+        copy_command_menu = tools_menu.addMenu("Copy AI Assistant Setup Command")
+        for client, text in (("claude", "Claude Code"), ("codex", "Codex")):
+            copy_command_menu.addAction(text).triggered.connect(
+                lambda _checked=False, client=client: self.copy_ai_assistant_command_requested.emit(client)
+            )
+        self.copy_ai_assistant_command_action = copy_command_menu.menuAction()
         self.set_ai_assistant_state(False, None)
         help_menu = self.menuBar().addMenu("Help")
         not_implemented.append(self._add_menu_action(help_menu, "About", self.about_requested))

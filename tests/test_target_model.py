@@ -134,6 +134,26 @@ def test_remove_targets():
     assert model.targets == (targets[1],)
 
 
+def test_the_table_tells_nothing_of_a_row_the_list_has_no_more_while_its_reset_is_told():
+    from PyQt6.QtCore import Qt
+
+    from RAPID2_Agilent.views.target_panel.target_table_model import TargetTableModel
+
+    model = TargetListModel()
+    for i in range(3):
+        model.add(make_target(index=i + 1, name=f"t{i}"))
+    table = TargetTableModel(model, mz_decimals=4)
+    asked = []
+    # as the views ask of their rows when told of the reset: the list model's are gone already
+    table.modelAboutToBeReset.connect(lambda: asked.extend(
+        (table.headerData(row, Qt.Orientation.Vertical), table.data(table.createIndex(row, 1)),
+         table.flags(table.createIndex(row, 1)) & Qt.ItemFlag.ItemIsEditable) for row in range(3)))
+
+    model.remove([target.id for target in model.targets])
+
+    assert asked == [(None, None, Qt.ItemFlag(0))] * 3 and table.rowCount() == 0
+
+
 def test_add_rejects_duplicate_index():
     model = TargetListModel()
     model.add(make_target(index=1))

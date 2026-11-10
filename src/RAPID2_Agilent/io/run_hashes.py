@@ -8,6 +8,8 @@ import hashlib
 from collections.abc import Callable
 from pathlib import Path
 
+from .rpd_file import stored_hash
+
 # hashed in this order, those present. Not hashed: files added later (*.tags, Results), the paths and the times.
 # DefaultMassCal.xml is, as the m/z depends on it, and only an edit by hand changes it.
 DATA_FILES = ("DefaultMassCal.xml", "MSMassCal.bin", "MSPeak.bin", "MSProfile.bin", "MSScan.bin")
@@ -41,7 +43,10 @@ def data_size(run: str | Path) -> int:
 
 
 def run_hashes(run: str | Path, on_chunk: Callable[[int], None] | None = None) -> tuple[str, str]:
-    """(scan_sha256, data_sha256) of the run, read again only once one of its files has changed."""
+    """(scan_sha256, data_sha256) of the run, read again only once one of its files has changed. Of a RAPID2 .rpd
+    file, ("", the SHA-256 it holds), the data_hash RAPID2 exports: it has no scan records of its own."""
+    if Path(run).suffix.lower() == ".rpd":
+        return "", stored_hash(run)
     run = Path(run).resolve()
     stamp = _stamp(run)
     kept = _hashes.get(run)

@@ -25,6 +25,11 @@ from ...utils.private_files import write_private_file
 
 RELAY_MODULE = "RAPID2_Agilent.mcp.relay"
 
+# The name a client knows RAPID2 by: in the registration line, the server's
+# introduction and the plugins (scripts/build_codex_plugin.py). Here, without
+# Qt, so the plugin builds can read it.
+SERVER_NAME = "rapid2-agilent"
+
 _HEADER = "Written by RAPID2 on every start. Edits here are overwritten."
 
 
@@ -103,12 +108,20 @@ def _quote_for_powershell(text):
     return "'{}'".format(text.replace("'", "''"))
 
 
-def registration_command(path, server_name):
-    """The line a user runs once to register RAPID2 with Claude Code.
+# The clients a registration line is written for, by the command each is
+# registered with. Both take the same `<name> -- <command>` form.
+CLIENTS = {"claude": "Claude Code", "codex": "Codex"}
+
+
+def registration_command(path, server_name, client="claude"):
+    """The line a user runs once to register RAPID2 with Claude Code
+    (`client` "claude") or Codex ("codex").
 
     Written for PowerShell on Windows and a POSIX shell elsewhere, because no
     single quoting is right in both.
     """
 
+    if client not in CLIENTS:
+        raise ValueError(f"No registration line is written for {client!r}.")
     quote = _quote_for_powershell if sys.platform == "win32" else shlex.quote
-    return f"claude mcp add {server_name} -- {quote(str(path))}"
+    return f"{client} mcp add {server_name} -- {quote(str(path))}"

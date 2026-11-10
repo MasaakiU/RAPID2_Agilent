@@ -185,3 +185,19 @@ def test_an_ms2_xic_uses_the_scans_of_its_precursor(runs):
     assert q.n_scans == len(in_window)
     assert q.scan_settings == "ESI- ProductIon"
     assert q.area > 0 and q.mz_peaktop is not None
+
+
+def test_warnings_tell_of_a_peak_top_at_the_windows_edge_and_of_saturation():
+    from RAPID2_Agilent.services.quantification import quantity_warnings
+
+    assert quantity_warnings(_xic(_Run([0, 1, 2, 3], [1, 3, 5, 1]))) == []
+    rising = quantity_warnings(_xic(_Run([0, 1, 2, 3], [1, 2, 3, 4])))
+    assert rising == ["the peak top is at the last scan of the RT window: the peak may go on beyond it"]
+    assert "first scan" in quantity_warnings(_xic(_Run([0, 1, 2], [4, 2, 1])))[0]
+    # no signal: its height of 0 tells of it, and its XIC would show nothing more
+    assert quantity_warnings(_xic(_Run([0, 1, 2], [0, 0, 0]))) == []
+    # too few scans: the note tells of it
+    assert quantity_warnings(_xic(_Run([0, 1, 2], [None, 3, None]))) == []
+    saturated = quantity_warnings(_xic(_Run([0, 1, 2], [1, 5e6, 1])), saturation_height=5e6)
+    assert len(saturated) == 1 and "saturation_height (5e+06)" in saturated[0]
+    assert quantity_warnings(_xic(_Run([0, 1, 2], [1, 5e6, 1]))) == []

@@ -129,7 +129,7 @@ class ChromatogramSpectrumPresenter(QObject):
                 self._last_spectrum = (rt_window, scan_indices, mz_list, inten_list, scan_index)
         self.current_scan_index = scan_index
         spectrum_window = self.view.spectrum_window
-        spectrum_window.set_primary_plot_data(mz_list, inten_list)
+        spectrum_window.set_primary_plot_data(mz_list, inten_list, spectra=self.model.spectra)
         spectrum_window.set_warning_html(
             "RT window beyond the scanned RT range" if self._rt_window_beyond_scans(rt_window, scan_indices) else ""
         )

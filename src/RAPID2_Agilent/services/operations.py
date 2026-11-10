@@ -240,7 +240,7 @@ def averaged_spectrum(
     mode: str = "mean",
     scan_indices: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int]:
-    """(mz, intensity, representative scan) of the profile spectrum averaged ("mean") or summed
+    """(mz, intensity, representative scan) of the spectrum (profile or centroid) averaged ("mean") or summed
     ("sum") over the scans in [rt_window[0], rt_window[1]), or of the scan nearest to the
     window's center when none is in it."""
     return data.extract_averaged_spectrum(rt_window[0], rt_window[1], mode, scan_indices=scan_indices)
@@ -261,7 +261,27 @@ def profile_peaks(
 ) -> np.ndarray:
     """Indices of the nonzero local maxima of a profile spectrum, most intense first."""
     apexes = np.flatnonzero((intensity[1:-1] > intensity[:-2]) & (intensity[1:-1] >= intensity[2:]) & (intensity[1:-1] > 0)) + 1
+    return _strongest(mz, intensity, apexes, mz_range, top_n)
+
+
+def spectrum_peaks(
+    mz: np.ndarray,
+    intensity: np.ndarray,
+    spectra: str,
+    *,
+    mz_range: tuple[float, float] | None = None,
+    top_n: int | None = None,
+) -> np.ndarray:
+    """Indices of the peaks of a spectrum of the spectra (MSData's), most intense first: of a profile, its local
+    maxima; of centroid spectra, every centroid not 0, as one next to a higher one is a peak of its own."""
+    if spectra == "centroid":
+        return _strongest(mz, intensity, np.flatnonzero(intensity > 0), mz_range, top_n)
+    return profile_peaks(mz, intensity, mz_range=mz_range, top_n=top_n)
+
+
+def _strongest(mz, intensity, indices, mz_range, top_n) -> np.ndarray:
+    """indices in mz_range, most intense first, top_n of them."""
     if mz_range is not None:
-        apexes = apexes[(mz_range[0] <= mz[apexes]) & (mz[apexes] <= mz_range[1])]
-    apexes = apexes[np.argsort(intensity[apexes], kind="stable")[::-1]]
-    return apexes if top_n is None else apexes[:top_n]
+        indices = indices[(mz_range[0] <= mz[indices]) & (mz[indices] <= mz_range[1])]
+    indices = indices[np.argsort(intensity[indices], kind="stable")[::-1]]
+    return indices if top_n is None else indices[:top_n]

@@ -35,8 +35,8 @@ class FakeContext:
         self.calls.append(("status",))
         return {"files": []}
 
-    def open_files(self, paths):
-        self.calls.append(("open_files", paths))
+    def open_files(self, paths, spectra=None):
+        self.calls.append(("open_files", paths, spectra))
         return {"opened": paths}
 
     def set_view(self, **changes):
@@ -291,12 +291,15 @@ def test_the_window_targets_are_exported_off_the_main_thread(dispatcher, context
     context.snapshot = {
         "targets": (reports.target_from_spec(spec, 1, []),),
         "paths": [str(require(DATA_PATH))],
+        "spectra": ["centroid"],
         "left_out": ["old.rpd"],
         "merge_ppm": 0,
         "run_peaks": None,
     }
     exported, is_error = call(dispatcher, "rapid2_export_targets", path=str(tmp_path / "out"))
     assert not is_error and exported["rpd_csv"] == str(tmp_path / "out.rpd.csv") and exported["left_out"] == ["old.rpd"]
+    # each file read of the spectra the window has it of
+    assert exported["spectra"] == ["centroid"]
     # the snapshot on the main thread, the measuring here
     assert dispatcher.on_main_thread == [True] and context.calls == [("target_snapshot",)]
     payload, is_error = call(dispatcher, "rapid2_export_targets", path=str(tmp_path / "out.rpd.csv"))
@@ -314,3 +317,59 @@ def test_runs_are_mapped_and_compared(dispatcher):
     assert not is_error and len(spots["spots"]) == 3
     compared, is_error = call(dispatcher, "rapid2_compare_runs", reference=path, query=str(require(DATA_DIR / "dummy_RP_2min_neg_copy.d")))
     assert not is_error and compared["higher_in_query"] == []
+
+
+def test_analysis_tools_read_the_centroid_spectra_when_asked(dispatcher):
+    path = str(require(DATA_PATH))
+    described, is_error = call(dispatcher, "rapid2_describe_run", path=path, spectra="centroid")
+    assert not is_error and described["spectra"] == "centroid" and "ms1_centroid_mz_range" in described
+    assert described["stored_spectra"] == {"profile": 164178754, "centroid": 8424068}
+    profile, _ = call(dispatcher, "rapid2_extract_xic", path=path, mz=965.9998, max_points=None)
+    centroid, is_error = call(dispatcher, "rapid2_extract_xic", path=path, mz=965.9998, max_points=None, spectra="centroid")
+    assert not is_error and (profile["spectra"], centroid["spectra"]) == ("profile", "centroid")
+    # the heights of the centroids, below the sums of the profile's points
+    assert 0.1 < centroid["apex_intensity"] / profile["apex_intensity"] < 0.5
+    spectrum, is_error = call(dispatcher, "rapid2_extract_spectrum", path=path, rt=1.0, top_n=3, spectra="centroid")
+    assert not is_error and spectrum["peaks"][0]["mz"] == pytest.approx(966.0, abs=0.002)
+    spots, is_error = call(dispatcher, "rapid2_map_spots", path=path, top_n=3, spectra="centroid")
+    assert not is_error and spots["spectra"] == "centroid" and len(spots["spots"]) == 3
+    quantified, is_error = call(
+        dispatcher, "rapid2_quantify_targets", runs=[path], spectra="centroid",
+        targets=[{"formula": "C6H12O6", "adduct": "[M-H]-", "rt": 1.0, "rt_tolerance": 0.5}],
+    )
+    assert not is_error and quantified["spectra"] == ["centroid"]
+
+
+def test_the_isotope_pattern_tool_leaves_out_the_rare_peaks(dispatcher):
+    payload, is_error = call(dispatcher, "rapid2_calculate_isotope_pattern", formula="C6H12O6", adduct="[M-H]-")
+    assert not is_error and payload["charge"] == -1
+    # M+3, 0.087 % of M+0, is below the 0.1 % left in by default
+    assert [peak["label"] for peak in payload["peaks"]] == ["M+0", "M+1", "M+2"]
+    assert payload["peaks"][0]["relative"] == 1 and payload["peaks"][1]["relative"] == pytest.approx(0.0684, abs=1e-3)
+    more, _ = call(dispatcher, "rapid2_calculate_isotope_pattern", formula="C6H12O6", adduct="[M-H]-", min_relative=0.0005)
+    assert [peak["label"] for peak in more["peaks"]] == ["M+0", "M+1", "M+2", "M+3"]
+
+
+def test_analysis_tools_read_a_rpd_file_of_the_spectra_it_holds(dispatcher, tmp_path):
+    from RAPID2_Agilent.io.rpd_file import write_rpd
+    from tests.test_rpd_file import _data
+
+    write_rpd(tmp_path / "x.rpd", _data("discrete"))
+    found, is_error = call(dispatcher, "rapid2_find_runs", directory=str(tmp_path))
+    assert not is_error and [run["name"] for run in found["runs"]] == ["x.rpd"]
+    described, is_error = call(dispatcher, "rapid2_describe_run", path=found["runs"][0]["path"])
+    assert not is_error and described["spectra"] == "centroid" and described["n_scans"] == 4
+
+
+def test_a_run_without_the_spectra_asked_for_is_an_answer(dispatcher, tmp_path):
+    (tmp_path / "x.d" / "AcqData").mkdir(parents=True)
+    (tmp_path / "x.d" / "AcqData" / "MSProfile.bin").write_bytes(b"x")
+    payload, is_error = call(dispatcher, "rapid2_extract_trace", path=str(tmp_path / "x.d"), spectra="centroid")
+    assert is_error and payload["message"] == "x.d has no centroid spectra, only profile spectra"
+
+
+def test_files_are_opened_in_the_window_of_the_spectra_asked_for(dispatcher, context, one_window):
+    call(dispatcher, "rapid2_open_files", paths=["a.d"])
+    call(dispatcher, "rapid2_open_files", paths=["a.d"], spectra="centroid")
+    # left out, the window chooses: a .d folder's profile, a .rpd file's own
+    assert context.calls == [("open_files", ["a.d"], None), ("open_files", ["a.d"], "centroid")]

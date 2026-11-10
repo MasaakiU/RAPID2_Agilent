@@ -1,12 +1,15 @@
 """Qt-facing MS data models; raw-data access lives in RAPID2_Agilent.io."""
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 from PyQt6.QtCore import pyqtSignal, QObject
 
+from ..io.agilent_centroid_reader import AgilentCentroidReader
 from ..io.agilent_reader import AgilentReader, MSCalibInfo, MSProfile, MSScanInfo
+from ..io.rpd_reader import RPDReader
 
 
 class BaseMSDataModel(QObject):
@@ -26,6 +29,10 @@ class BaseMSDataModel(QObject):
 
     @property
     def N_scans(self) -> int:
+        raise NotImplementedError
+
+    @property
+    def spectra(self) -> str:
         raise NotImplementedError
 
     @property
@@ -60,7 +67,9 @@ class BaseMSDataModel(QObject):
     def collision_energy_list(self) -> np.ndarray | None:
         raise NotImplementedError
 
-    def load(self, path: Path):
+    def load(self, path: Path, on_progress: Callable[[int, int], None] | None = None):
+        """Read the file; on_progress(done, total) told of the parts read as they are, where the reader tells of
+        them, which may raise to stop."""
         raise NotImplementedError
 
     def scan_indices_for_ms_level(self, ms_level: int | None) -> np.ndarray:
@@ -128,12 +137,12 @@ class RPDDataSetList(QObject):
         by_original = {data_set.original: data_set for data_set in self._data_sets}
         self._data_sets = [by_original[model] for model in ms_data_models if model in by_original]
 
-class AgilentDModel(BaseMSDataModel):
-    """Qt-facing model delegating raw-data access to an AgilentReader."""
+class ReaderModel(BaseMSDataModel):
+    """Qt-facing model delegating raw-data access to a reader of the MSData protocol."""
 
-    def __init__(self):
+    def __init__(self, reader):
         super().__init__()
-        self.reader = AgilentReader()
+        self.reader = reader
 
     @property
     def file_path(self) -> Path | None:
@@ -142,6 +151,10 @@ class AgilentDModel(BaseMSDataModel):
     @property
     def N_scans(self) -> int:
         return self.reader.N_scans
+
+    @property
+    def spectra(self) -> str:
+        return self.reader.spectra
 
     @property
     def RT_list(self) -> np.ndarray | None:
@@ -175,6 +188,56 @@ class AgilentDModel(BaseMSDataModel):
     def collision_energy_list(self) -> np.ndarray | None:
         return self.reader.collision_energy_list
 
+    def load(self, path: Path, on_progress: Callable[[int, int], None] | None = None):
+        """Of a reader that reads its file in one go: no progress told."""
+        self.reader.load(path)
+
+    def close(self):
+        self.reader.close()
+
+    def scan_indices_for_ms_level(self, ms_level: int | None) -> np.ndarray:
+        return self.reader.scan_indices_for_ms_level(ms_level)
+
+    def get_scan_type_summary(self) -> list[tuple[str, int]]:
+        return self.reader.get_scan_type_summary()
+
+    def extract_spectrum(self, scan_index: int) -> Tuple[np.ndarray, np.ndarray]:
+        return self.reader.extract_spectrum(scan_index)
+
+    def extract_averaged_spectrum(self, rt_min: float, rt_max: float, mode: str = "mean", *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray, int]:
+        return self.reader.extract_averaged_spectrum(rt_min, rt_max, mode, scan_indices=scan_indices)
+
+    def extract_averaged_sub_spectrum(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        return self.reader.extract_averaged_sub_spectrum(low_mz, high_mz, scan_indices=scan_indices)
+
+    def extract_chromatogram(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        return self.reader.extract_chromatogram(low_mz, high_mz, scan_indices=scan_indices)
+
+    def mz_window_gaps(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> np.ndarray:
+        return self.reader.mz_window_gaps(low_mz, high_mz, scan_indices=scan_indices)
+
+    def extract_tic(self, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        return self.reader.extract_tic(scan_indices=scan_indices)
+
+    def profile_mz_range(self, scan_indices: np.ndarray) -> Tuple[float, float]:
+        return self.reader.profile_mz_range(scan_indices)
+
+    def max_into_bins(self, scan_index: int, edges: np.ndarray, out: np.ndarray) -> None:
+        self.reader.max_into_bins(scan_index, edges, out)
+
+    def extract_bpc(self, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        return self.reader.extract_bpc(scan_indices=scan_indices)
+
+class AgilentDModel(ReaderModel):
+    """Qt-facing model delegating raw-data access to an AgilentReader."""
+
+    def __init__(self):
+        super().__init__(AgilentReader())
+
+    def load(self, path: Path, on_progress: Callable[[int, int], None] | None = None):
+        """on_progress told of the scans read."""
+        self.reader.load(path, on_progress)
+
     @property
     def AcqData_path(self) -> Path:
         return self.reader.AcqData_path
@@ -199,51 +262,20 @@ class AgilentDModel(BaseMSDataModel):
     def spectrum_param_index(self, value: int) -> None:
         self.reader.spectrum_param_index = value
 
-    def load(self, folder_path: Path):
-        self.reader.load(folder_path)
-
-    def close(self):
-        self.reader.close()
-
-    def scan_indices_for_ms_level(self, ms_level: int | None) -> np.ndarray:
-        return self.reader.scan_indices_for_ms_level(ms_level)
-
-    def get_scan_type_summary(self) -> list[tuple[str, int]]:
-        return self.reader.get_scan_type_summary()
-
-    def extract_spectrum(self, scan_index: int) -> Tuple[np.ndarray, np.ndarray]:
-        return self.reader.extract_spectrum(scan_index)
-
-    def extract_averaged_spectrum(self, rt_min: float, rt_max: float, mode: str = "mean", *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray, int]:
-        return self.reader.extract_averaged_spectrum(rt_min, rt_max, mode, scan_indices=scan_indices)
-
-    def extract_averaged_sub_spectrum(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        return self.reader.extract_averaged_sub_spectrum(low_mz, high_mz, scan_indices=scan_indices)
-
     def extract_averaged_spectrum_python(self, rt_min: float, rt_max: float, mode: str = "mean", *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray, int]:
         return self.reader.extract_averaged_spectrum_python(rt_min, rt_max, mode, scan_indices=scan_indices)
 
     def extract_averaged_spectrum_native_bins(self, rt_min: float, rt_max: float, mode: str = "mean", *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray, int]:
         return self.reader.extract_averaged_spectrum_native_bins(rt_min, rt_max, mode, scan_indices=scan_indices)
 
-    def extract_chromatogram(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
-        return self.reader.extract_chromatogram(low_mz, high_mz, scan_indices=scan_indices)
+class AgilentCentroidModel(ReaderModel):
+    """Qt-facing model of the centroid spectra of an Agilent .d run, delegating to an AgilentCentroidReader."""
 
-    def mz_window_gaps(self, low_mz: float, high_mz: float, *, scan_indices: np.ndarray | None = None) -> np.ndarray:
-        return self.reader.mz_window_gaps(low_mz, high_mz, scan_indices=scan_indices)
+    def __init__(self):
+        super().__init__(AgilentCentroidReader())
 
-    def extract_tic(self, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
-        return self.reader.extract_tic(scan_indices=scan_indices)
+class RPDFileModel(ReaderModel):
+    """Qt-facing model of a RAPID2 .rpd file, delegating to an RPDReader."""
 
-    def profile_mz_range(self, scan_indices: np.ndarray) -> Tuple[float, float]:
-        return self.reader.profile_mz_range(scan_indices)
-
-    def max_into_bins(self, scan_index: int, edges: np.ndarray, out: np.ndarray) -> None:
-        self.reader.max_into_bins(scan_index, edges, out)
-
-    def extract_bpc(self, *, scan_indices: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
-        return self.reader.extract_bpc(scan_indices=scan_indices)
-
-class RPDFileModel(BaseMSDataModel):
-    def load(self, file_path: Path):
-        raise NotImplementedError("Loading .rpd files is not implemented yet.")
+    def __init__(self):
+        super().__init__(RPDReader())

@@ -21,6 +21,10 @@ from .utils.path import AppPath
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RAPID2 Agilent viewer.")
     parser.add_argument("folders", nargs="*", type=Path, help="Agilent .d folders to open at startup.")
+    parser.add_argument(
+        "--centroid", action="store_true",
+        help="Read the folders' centroid spectra (MSPeak.bin), not their profile: about 1/17 of the data, for runs on a server.",
+    )
     args = parser.parse_args(argv)
     missing_paths = [path for path in args.folders if not path.is_dir()]
     if missing_paths:
@@ -48,7 +52,7 @@ def main(argv: Sequence[str] | None = None):
     presenter = MainPresenter(view, model)
     app.aboutToQuit.connect(presenter.shutdown)
     if args.folders:
-        presenter.open_d_folders_clicked([str(path.resolve()) for path in args.folders])
+        presenter.open_d_folders_clicked([str(path.resolve()) for path in args.folders], centroid=args.centroid)
     presenter.apply_ai_assistant_setting()
     view.show()
     exit_code = app.exec()

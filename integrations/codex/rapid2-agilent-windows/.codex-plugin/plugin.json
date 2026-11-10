@@ -1,0 +1,37 @@
+{
+  "name": "rapid2-agilent-windows",
+  "version": "0.1.0",
+  "description": "Read Agilent LC-MS runs and drive the RAPID2 viewer.",
+  "author": {
+    "name": "MasaakiU",
+    "url": "https://github.com/MasaakiU/RAPID2_Agilent"
+  },
+  "homepage": "https://github.com/MasaakiU/RAPID2_Agilent",
+  "repository": "https://github.com/MasaakiU/RAPID2_Agilent",
+  "license": "MIT",
+  "keywords": [
+    "LC-MS",
+    "mass spectrometry",
+    "Agilent",
+    "metabolomics"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "RAPID2 Agilent (Windows)",
+    "shortDescription": "Read Agilent LC-MS runs and drive the RAPID2 viewer.",
+    "longDescription": "Lets an assistant read Agilent LC-MS .d folders and RAPID2 .rpd files without\nvendor software -- XICs, TIC/BPC, spectra, the strongest spots of a run and\nwhere two runs differ, the area, height and peak top of targets in many runs,\nwritten as a .rpd.csv file, and the RT alignment of two runs -- and work in the\nRAPID2 window you have open: open runs, show an RT and m/z range, add and\nselect targets, and capture the window.\n\nRAPID2 has to be installed, and Tools > AI Assistant Access switched on once:\nthat writes the launcher this integration starts. After that the analysis\ntools work while RAPID2 is closed, and the viewer tools need a window, which\nthe assistant can start. RAPID2 listens on 127.0.0.1 only, and every request\ncarries an access token made each time it starts. An assistant that runs its\nmodel on a remote service sends what it reads from RAPID2 there.\n\nThe assistant writes only new files (a .rpd.csv that must not exist yet, a new\nalignment folder). Its changes to the window's view and targets can be undone\nfrom the View and Edit menus.\n",
+    "developerName": "MasaakiU",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/MasaakiU/RAPID2_Agilent",
+    "defaultPrompt": [
+      "What does RAPID2 have open right now?",
+      "List the runs in this folder and describe the first one.",
+      "Quantify the targets of this .rpd.csv file in these runs."
+    ],
+    "logo": "./assets/logo.png"
+  }
+}

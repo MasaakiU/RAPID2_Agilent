@@ -84,10 +84,28 @@ def launcher_dir(application_name=APPLICATION_NAME):
     override = os.environ.get(DATA_DIR_ENV)
     if override:
         return Path(override) / "bin"
-    if sys.platform == "darwin":
+    return platform_launcher_dir(application_name)
+
+
+def home_relative_launcher_dir(platform=None, application_name=APPLICATION_NAME):
+    """Where the launcher's directory sits below the home directory, as POSIX.
+
+    Answered for a platform rather than for this one, because the client
+    integrations (scripts/build_*.py) are built on one machine and installed
+    on another.
+    """
+
+    platform = sys.platform if platform is None else platform
+    if platform == "darwin":
         parts = ("Library", "Application Support", application_name, "bin")
-    elif sys.platform == "win32":
+    elif platform == "win32":
         parts = ("AppData", "Local", application_name, "bin")
     else:
         parts = (".local", "share", application_name, "bin")
-    return _home().joinpath(*parts)
+    return "/".join(parts)
+
+
+def platform_launcher_dir(application_name=APPLICATION_NAME):
+    """The real launcher directory, ignoring the override. See `launcher_dir`."""
+
+    return _home().joinpath(*home_relative_launcher_dir(application_name=application_name).split("/"))

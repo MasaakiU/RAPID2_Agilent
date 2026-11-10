@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rapid2-agilent": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "%USERPROFILE%\\AppData\\Local\\RAPID2_Agilent\\bin\\rapid2-mcp-relay.cmd"
+      ]
+    }
+  }
+}

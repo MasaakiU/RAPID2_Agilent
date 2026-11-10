@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +15,9 @@ from PyQt6.QtWidgets import (
     QProgressDialog,
 )
 
-from RAPID2_Agilent.models.rpd_model import AgilentDModel, BaseMSDataModel, RPDFileModel
+from RAPID2_Agilent.io import mzdata
+from RAPID2_Agilent.io.agilent_centroid_reader import stored_spectra
+from RAPID2_Agilent.models.rpd_model import AgilentCentroidModel, AgilentDModel, BaseMSDataModel, RPDFileModel
 from RAPID2_Agilent.models.run_peaks import RunPeaksStore
 from RAPID2_Agilent.services import peak_detection, rpd_csv
 from RAPID2_Agilent.views.data_stack import ChromatogramSpectrumStackPresenter
@@ -129,12 +132,31 @@ class MainPresenter:
             return
 
         self.model.settings_model.save_last_dir(file_path_list[-1])
-        for file_path in file_path_list:
-            ms_data_model = RPDFileModel()
-            ms_data_model.load(Path(file_path))
-            self.add_ms_data_model(ms_data_model)
+        to_open = self._not_open(file_path_list, "Open RPD file")
+        if not to_open:
+            return
+        progress, opened = self._opening_progress("Open RPD file", len(to_open))
+        try:
+            for position, file_path in enumerate(to_open):
+                name = Path(file_path).name
+                opened(name, position, 0, 1)
+                try:
+                    self.open_rpd_file(file_path)
+                except (OSError, ValueError) as error:
+                    QMessageBox.warning(self.view, "Open RPD file", f"{name} could not be opened.\n\n{error}")
+                    continue
+                opened(name, position, 1, 1)
+        except rpd_csv.Cancelled:
+            pass  # those opened stay open
+        finally:
+            progress.close()
 
-    def open_d_folders_clicked(self, folder_path_list: Sequence[str] | None = None) -> None:
+    def open_d_folders_clicked(self, folder_path_list: Sequence[str] | None = None, *, centroid: bool = False) -> None:
+        """Of the folders chosen in the dialog, each with centroid spectra as well as the profile is read as the user
+        answers, all asked before any is read; those given (the command line) are read of their centroid spectra if
+        centroid, else of their profile. A run of centroid spectra only is read of them. One that cannot be read is
+        told of. They are read with their progress shown; once it is cancelled, those read stay open."""
+        ask = folder_path_list is None
         if folder_path_list is None:
             folder_path_list = self.open_native_file(title="Select Agilent .d folder", start_dir=self.model.settings_model.get_last_dir(), choose_directories=True, allow_multiple=True)
         folder_path_list = [
@@ -146,20 +168,97 @@ class MainPresenter:
             return
 
         self.model.settings_model.save_last_dir(folder_path_list[-1])
-        # each folder is opened once: the files are told apart by their folders
-        open_folders = {Path(model.file_path).resolve() for model in self.data_stack_presenter.models}
-        to_open, already_open = [], []
-        for folder_path in folder_path_list:
-            folder = Path(folder_path).resolve()
-            (already_open if folder in open_folders else to_open).append(folder_path)
-            open_folders.add(folder)
-        if already_open:
-            names = "\n".join(Path(folder_path).name for folder_path in already_open)
-            QMessageBox.information(self.view, "Open .d folder", f"Open already:\n\n{names}")
-        for folder_path in to_open:
+        to_open = self._not_open(folder_path_list, "Open .d folder")
+        chosen = []  # (folder, of its centroid spectra)
+        applied = None  # (centroid,) once "Apply to all" is checked: the answer for the rest
+        for position, folder_path in enumerate(to_open):
+            sizes = stored_spectra(folder_path)
+            use_centroid = centroid
+            if ask and len(sizes) == 2:
+                if applied is None:
+                    answer = self._ask_centroid(Path(folder_path).name, sizes, more=position < len(to_open) - 1)
+                    if answer is None:
+                        return
+                    use_centroid, apply_to_all = answer
+                    if apply_to_all:
+                        applied = (use_centroid,)
+                else:
+                    use_centroid = applied[0]
+            chosen.append((folder_path, use_centroid))
+        if not chosen:
+            return
+        progress, opened = self._opening_progress("Open .d folder", len(chosen))
+        try:
+            for position, (folder_path, use_centroid) in enumerate(chosen):
+                name = Path(folder_path).name
+                opened(name, position, 0, 1)
+                try:
+                    self.open_d_folder(folder_path, centroid=use_centroid, on_progress=partial(opened, name, position))
+                except (OSError, ValueError) as error:
+                    QMessageBox.warning(self.view, "Open .d folder", f"{name} could not be opened.\n\n{error}")
+                opened(name, position, 1, 1)
+        except rpd_csv.Cancelled:
+            pass  # those opened stay open
+        finally:
+            progress.close()
+
+    def open_rpd_file(self, file_path: str | Path) -> BaseMSDataModel:
+        """Open a .rpd file, of the spectra it holds. OSError or ValueError if it cannot be read, as the AI assistant
+        is told."""
+        ms_data_model = RPDFileModel()
+        ms_data_model.load(Path(file_path))
+        self.add_ms_data_model(ms_data_model)
+        return ms_data_model
+
+    def open_d_folder(
+        self, folder_path: str | Path, *, centroid: bool = False, on_progress: Callable[[int, int], None] | None = None
+    ) -> BaseMSDataModel:
+        """Open a .d folder of its centroid spectra if centroid, else of its profile; a run of centroid spectra only,
+        of them. on_progress(done, total) told of the scans of a profile read. OSError or ValueError if it cannot be
+        read, as the AI assistant is told."""
+        sizes = stored_spectra(folder_path)
+        if centroid or ("centroid" in sizes and "profile" not in sizes):
+            ms_data_model = AgilentCentroidModel()
+        else:
             ms_data_model = AgilentDModel()
-            ms_data_model.load(Path(folder_path))
-            self.add_ms_data_model(ms_data_model)
+        ms_data_model.load(Path(folder_path), on_progress)
+        self.add_ms_data_model(ms_data_model)
+        return ms_data_model
+
+    def _ask_centroid(self, name: str, sizes: dict[str, int], *, more: bool) -> tuple[bool, bool] | None:
+        """Whether to read a run's centroid spectra rather than its profile, and to the rest too ("Apply to all",
+        offered if more are to be opened); None if cancelled."""
+        box = QMessageBox(
+            QMessageBox.Icon.Question, "Open .d folder",
+            f"{name} holds centroid spectra as well as the profile. Which to read?\n\n"
+            f"Profile: {sizes['profile'] / 1e6:,.0f} MB\n"
+            f"Centroid: {sizes['centroid'] / 1e6:,.0f} MB, the peaks as stored at acquisition; quicker from a server",
+            parent=self.view,
+        )
+        profile_button = box.addButton("Profile", QMessageBox.ButtonRole.AcceptRole)
+        centroid_button = box.addButton("Centroid", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(profile_button)
+        apply_to_all = QCheckBox("Apply to all")
+        if more:
+            box.setCheckBox(apply_to_all)
+        box.exec()
+        if box.clickedButton() not in (profile_button, centroid_button):
+            return None
+        return box.clickedButton() is centroid_button, apply_to_all.isChecked()
+
+    def _not_open(self, path_list: Sequence[str], title: str) -> list[str]:
+        """The paths not open yet, each once, the others told of: the files are told apart by their paths."""
+        open_paths = {Path(model.file_path).resolve() for model in self.data_stack_presenter.models}
+        to_open, already_open = [], []
+        for path in path_list:
+            resolved = Path(path).resolve()
+            (already_open if resolved in open_paths else to_open).append(path)
+            open_paths.add(resolved)
+        if already_open:
+            names = "\n".join(Path(path).name for path in already_open)
+            QMessageBox.information(self.view, title, f"Open already:\n\n{names}")
+        return to_open
 
     def open_native_file(
         self,
@@ -214,18 +313,52 @@ class MainPresenter:
             "return outputText",
             "end run",
         ]
+        # the folder last used may be gone (a server unmounted), and choose folder fails on it without a dialog:
+        # the nearest folder of it that is, else the home
+        start = Path(start_dir).expanduser()
+        while not start.is_dir() and start != start.parent:
+            start = start.parent
+        if not start.is_dir():
+            start = Path.home()
         command = ["osascript"]
         for line in script:
             command.extend(["-e", line])
-        command.extend([title, start_dir])
+        command.extend([title, str(start)])
 
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         if result.returncode != 0:
+            # -128: cancelled by the user; any other failure is told of, not left as nothing happening
+            if "(-128)" not in result.stderr:
+                QMessageBox.warning(self.view, title, f"The folder dialog could not be shown.\n\n{result.stderr.strip()}")
             return []
         return [line for line in result.stdout.splitlines() if line]
 
-    def convert_files_clicked(self):
-        pass
+    def convert_files_clicked(self, file_path_list: Sequence[str] | None = None) -> None:
+        """Convert mzData files to .rpd files next to them, as RAPID2 does, asked for unless given."""
+        if file_path_list is None:
+            file_path_list, _file_type = QFileDialog.getOpenFileNames(self.view, "Select mzData file", self.model.settings_model.get_last_dir(), filter="mzData files (*.xml)")
+        if not file_path_list:
+            return
+
+        self.model.settings_model.save_last_dir(file_path_list[-1])
+        existing = [mzdata.rpd_path(file_path) for file_path in file_path_list if mzdata.rpd_path(file_path).exists()]
+        if existing and QMessageBox.question(
+            self.view, "Convert Files", "Replace these?\n\n" + "\n".join(path.name for path in existing)
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        progress, on_progress = self._progress("Convert Files", "Converting")
+        written = []
+        try:
+            for file_path in file_path_list:
+                written.append(mzdata.convert(Path(file_path), on_progress))
+        except rpd_csv.Cancelled:
+            pass
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self.view, "Convert Files", f"{Path(file_path).name} could not be converted.\n\n{error}")
+        finally:
+            progress.close()
+        if written:
+            QMessageBox.information(self.view, "Convert Files", "Written:\n\n" + "\n".join(path.name for path in written))
 
     # notes on rows listed after an export, the rest counted
     EXPORT_NOTES_SHOWN = 20
@@ -342,6 +475,25 @@ class MainPresenter:
                 raise rpd_csv.Cancelled
 
         return progress, on_progress
+
+    # of the progress dialog of opening files, the steps of each file's part of the bar
+    OPEN_STEPS = 100
+
+    def _opening_progress(self, title: str, count: int) -> tuple[QProgressDialog, Callable[[str, int, int, int], None]]:
+        """A dialog of the progress of opening count files, shown at once, as a run's profile takes seconds to read,
+        and the opened(name, position, done, total) to tell it of the file at position (from 0), done of its total
+        parts read; it raises rpd_csv.Cancelled once Cancel is clicked."""
+        progress, on_progress = self._progress(title, "Opening")
+        progress.setMinimumDuration(0)
+        shown = [None]  # the step shown last: told again only of another
+
+        def opened(name: str, position: int, done: int, total: int):
+            step = position * self.OPEN_STEPS + self.OPEN_STEPS * done // max(total, 1)
+            if step != shown[0] or done == 0:
+                shown[0] = step
+                on_progress(f"Opening {name} ({position + 1} of {count})", step, count * self.OPEN_STEPS)
+
+        return progress, opened
 
     def run_peaks_to_export(self) -> RunPeaksStore | None:
         """The files' own RT windows of the targets, as the plots show them: None while they are linked."""
@@ -499,9 +651,9 @@ class MainPresenter:
             QMessageBox.warning(self.view, "AI Assistant Access", f"AI assistant access could not start.\n\n{controller.last_error}")
         self._refresh_ai_assistant_state()
 
-    def copy_ai_assistant_command(self) -> None:
-        """Copy the one-time `claude mcp add ...` line for this computer."""
-        command = self.mcp_controller.client_command()
+    def copy_ai_assistant_command(self, client: str = "claude") -> None:
+        """Copy the one-time `claude mcp add ...` (or `codex mcp add ...`) line for this computer."""
+        command = self.mcp_controller.client_command(client)
         if command:
             QApplication.clipboard().setText(command)
 

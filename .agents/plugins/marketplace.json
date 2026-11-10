@@ -1,0 +1,32 @@
+{
+  "name": "rapid2-agilent",
+  "interface": {
+    "displayName": "RAPID2 Agilent"
+  },
+  "plugins": [
+    {
+      "name": "rapid2-agilent-macos",
+      "source": {
+        "source": "local",
+        "path": "./integrations/codex/rapid2-agilent-macos"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "rapid2-agilent-windows",
+      "source": {
+        "source": "local",
+        "path": "./integrations/codex/rapid2-agilent-windows"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

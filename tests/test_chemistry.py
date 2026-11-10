@@ -80,3 +80,33 @@ def test_invalid_formula_raises(formula):
 def test_invalid_adduct_raises(adduct):
     with pytest.raises(ValueError):
         parse_adduct(adduct)
+
+
+def test_the_isotope_pattern_of_glucose_is_of_the_natural_abundances():
+    from RAPID2_Agilent.models.chemistry import isotope_pattern
+
+    peaks = isotope_pattern("C6H12O6", "[M-H]-")
+    assert [peak.shift for peak in peaks[:3]] == [0, 1, 2]
+    assert peaks[0].mz == pytest.approx(ion_mz("C6H12O6", "[M-H]-"), abs=1e-9)
+    # M+1 / M+0 of C6 H11 O6, by the binomial of each element
+    expected = 6 * 0.0107 / 0.9893 + 11 * 0.000115 / 0.999885 + 6 * 0.00038 / 0.99757
+    assert peaks[1].fraction / peaks[0].fraction == pytest.approx(expected, rel=1e-3)
+    assert sum(peak.fraction for peak in peaks) == pytest.approx(1, abs=1e-9)
+
+
+def test_atoms_written_as_an_isotope_are_of_it_alone_and_the_charge_divides_the_shift():
+    from RAPID2_Agilent.models.chemistry import ion_composition, isotope_pattern
+
+    labelled = isotope_pattern("C5H5[2H]9NO", "[M]+")
+    assert labelled[0].mz == pytest.approx(ion_mz("C5H5[2H]9NO", "[M]+"), abs=1e-9)
+    # of C5 H5 N O alone, the [2H] adding none
+    assert labelled[1].fraction / labelled[0].fraction == pytest.approx(
+        5 * 0.0107 / 0.9893 + 5 * 0.000115 / 0.999885 + 0.00364 / 0.99636 + 0.00038 / 0.99757, rel=1e-3,
+    )
+    doubly = isotope_pattern("C6H12O6", "[M+2H]2+")
+    assert doubly[1].mz - doubly[0].mz == pytest.approx(1.00335 / 2, abs=1e-3)
+    # an element whose most abundant isotope is not its lightest: 10B below 11B
+    assert isotope_pattern("C2H5BO2", "[M+H]+")[0].shift == -1
+    assert ion_composition("C6H12O6", "[M-H2O+H]+") == ({"C": 6, "H": 11, "O": 5}, 1)
+    with pytest.raises(ValueError, match="takes away more"):
+        ion_composition("CH4", "[M-H2O+H]+")

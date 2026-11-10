@@ -165,14 +165,22 @@ class TargetTableModel(QAbstractTableModel):
             return None
         if orientation == Qt.Orientation.Horizontal:
             return self.COLUMNS[section].header
-        return str(self.target_at(section).index)
+        return str(self.target_at(section).index) if self._has_row(section) else None
 
     def flags(self, index: QModelIndex):
         flags = super().flags(index)
         column = self.COLUMNS[index.column()]
-        if column.field is None or self.is_unused(self.target_at(index.row()), column.field):
+        if not self._has_row(index.row()) or column.field is None or self.is_unused(
+            self.target_at(index.row()), column.field
+        ):
             return flags
         return flags | Qt.ItemFlag.ItemIsEditable
+
+    def _has_row(self, row: int) -> bool:
+        """Whether the list model has the row: the views ask of theirs while they are told of a reset (Remove all
+        targets: of rows the list model has no more), and nothing is shown of those, as they ask again once it is
+        through (see shown_id)."""
+        return 0 <= row < len(self.target_list_model.targets)
 
     @staticmethod
     def is_unused(target: Target, field: str) -> bool:
@@ -182,6 +190,8 @@ class TargetTableModel(QAbstractTableModel):
         )
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not self._has_row(index.row()):
+            return None
         target = self.target_at(index.row())
         column = self.COLUMNS[index.column()]
         if role == Qt.ItemDataRole.DisplayRole:

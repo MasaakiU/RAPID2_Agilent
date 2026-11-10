@@ -84,3 +84,10 @@ def test_an_object_argument_is_json(capsys):
     assert json.loads(capsys.readouterr().out)["rows"][0]["name"] == "C6H12O6"
     finished = run_cli("quantify-targets", "--runs", "x.d", "--targets", "{not json")
     assert finished.returncode == 2 and "invalid JSON object value" in finished.stderr
+
+
+def test_a_run_is_read_of_its_centroid_spectra_with_spectra_centroid(capsys):
+    path = require(DATA_PATH)
+    assert cli.main(["extract-xic", "--path", str(path), "--mz", "965.9998", "--spectra", "centroid", "--max-points", "3"]) == 0
+    assert json.loads(capsys.readouterr().out)["spectra"] == "centroid"
+    assert run_cli("extract-xic", "--path", "x.d", "--mz", "150", "--spectra", "peaks").returncode == 2

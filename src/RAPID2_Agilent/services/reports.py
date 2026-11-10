@@ -14,12 +14,15 @@ import numpy as np
 
 from ..alignment import AlignmentConfig, align_and_save, with_options
 from ..alignment import scale_candidates as alignment_scale_candidates
-from ..io import AgilentReader
+from ..io import MSData
+from ..io.sample_info import read_sample_info
+from ..models import chemistry
 from ..models.chemistry import formula_mass, ion_mz, parse_adduct
 from ..models.run_peaks import RunPeaksStore
 from ..models.target import MSLevel, Target, ToleranceUnit, TraceType, tolerance_window
 from . import maps, operations, rpd_csv
-from .runs import RunCache, run_path
+from .quantification import quantity_warnings
+from .runs import RunCache, chosen_spectra, is_rpd, open_run, run_path, stored_spectra
 
 
 # the name of a target described without a name or a formula: the target panel's
@@ -57,10 +60,16 @@ def scan_types(data) -> list[dict]:
     return [{"type": name, "scans": count} for name, count in data.get_scan_type_summary()]
 
 
-def describe_run(reader: AgilentReader) -> dict:
+def describe_run(reader: MSData) -> dict:
+    """Its sample information (of a .d folder, as MassHunter wrote it), its scans, and its spectra: those read
+    (spectra), whose m/z range is given, and those the run holds, by the bytes of their files (stored_spectra), the
+    centroid spectra about 1/17 of the profile; a .rpd file holds one."""
     summary = {
         "name": reader.file_path.name,
         "path": str(reader.file_path),
+        "sample_info": {} if is_rpd(reader.file_path) else read_sample_info(reader.file_path),
+        "spectra": reader.spectra,
+        "stored_spectra": stored_spectra(reader.file_path),
         "n_scans": int(reader.N_scans),
         "rt_unit": "min",
         "rt_range": [float(reader.RT_list.min()), float(reader.RT_list.max())],
@@ -68,7 +77,7 @@ def describe_run(reader: AgilentReader) -> dict:
     }
     for ms_level in sorted({int(level) for level in reader.MS_level_list}):
         scan_indices = reader.scan_indices_for_ms_level(ms_level)
-        summary[f"ms{ms_level}_profile_mz_range"] = list(reader.profile_mz_range(scan_indices))
+        summary[f"ms{ms_level}_{reader.spectra}_mz_range"] = list(reader.profile_mz_range(scan_indices))
     if (reader.MS_level_list == 2).any():
         summary["n_ms2_precursors"] = len(operations.precursors([reader]))
     return summary
@@ -84,7 +93,7 @@ def precursor_dict(precursor: operations.Precursor) -> dict:
 
 
 def ms2_precursors(
-    reader: AgilentReader,
+    reader: MSData,
     *,
     merge_ppm: float = 0.0,
     mz_range: tuple[float, float] | None = None,
@@ -173,8 +182,27 @@ def calculate_ion(formula: str, adduct: str) -> dict:
     return {"formula": formula, "adduct": adduct, "neutral_mass": formula_mass(formula), "mz": ion_mz(formula, adduct)}
 
 
+def isotope_pattern(formula: str, adduct: str, *, min_relative: float = 0.001) -> dict:
+    """The ion's isotope pattern by nominal mass (chemistry.isotope_pattern): the peaks of at least min_relative of
+    the most abundant, each with its mean m/z, its fraction of all the ions and its abundance relative to the most
+    abundant."""
+    peaks = chemistry.isotope_pattern(formula, adduct)
+    _composition, charge = chemistry.ion_composition(formula, adduct)
+    top = max(peak.fraction for peak in peaks)
+    return {
+        "formula": formula,
+        "adduct": adduct,
+        "charge": charge,
+        "peaks": [
+            {"label": f"M{peak.shift:+d}", "shift": peak.shift, "mz": peak.mz, "fraction": peak.fraction, "relative": peak.fraction / top}
+            for peak in peaks
+            if peak.fraction >= min_relative * top
+        ],
+    }
+
+
 def xic(
-    reader: AgilentReader,
+    reader: MSData,
     mz: float | None = None,
     tolerance: float = 10.0,
     unit: str = "ppm",
@@ -189,8 +217,9 @@ def xic(
     collision_energy: float | None = None,
     merge_ppm: float = 0.0,
 ) -> dict:
-    """Summed profile intensity in the m/z window around mz, or the ion of formula + adduct, per scan; with
-    precursor_mz, mz is a product ion. An adduct chooses the scans of its polarity, as the plots do.
+    """Summed intensity in the m/z window around mz, or the ion of formula + adduct, per scan: of the profile's
+    points, or of the centroids' heights (reader.spectra; about 0.15 to 0.4 of the profile's, not to be compared with
+    it). With precursor_mz, mz is a product ion. An adduct chooses the scans of its polarity, as the plots do.
 
     As in the plots and the .rpd.csv export, a scan whose profile data points miss the m/z window is left out, not
     taken for 0: that m/z was not measured there (n_missing, and the plots' warning).
@@ -215,6 +244,7 @@ def xic(
     chemistry = {name: value for name, value in (("formula", formula), ("adduct", adduct)) if value is not None}
     result = {
         "trace": TraceType.XIC.value,
+        "spectra": reader.spectra,
         "mz": float(mz),
         **chemistry,
         "mz_window": list(mz_window),
@@ -230,7 +260,7 @@ def xic(
 
 
 def trace(
-    reader: AgilentReader,
+    reader: MSData,
     trace_type: str = "TIC",
     *,
     polarity: str | None = None,
@@ -255,7 +285,7 @@ def trace(
 
 
 def spectrum(
-    reader: AgilentReader,
+    reader: MSData,
     rt: float,
     rt_tolerance: float = 0.0,
     *,
@@ -268,14 +298,16 @@ def spectrum(
     collision_energy: float | None = None,
     merge_ppm: float = 0.0,
 ) -> dict:
-    """The most intense profile peaks of the spectrum over [rt - rt_tolerance, rt + rt_tolerance)."""
+    """The most intense peaks of the spectrum over [rt - rt_tolerance, rt + rt_tolerance): of a profile, its local
+    maxima; of centroid spectra, the centroids."""
     rt_window = (rt - rt_tolerance, rt + rt_tolerance)
     sign = polarity_sign(polarity)
     ms2 = _ms2(reader, ms_level, precursor_mz, collision_energy, merge_ppm, sign)
     scan_indices = _scans(reader, ms_level, ms2=ms2, polarity=sign)
     mz, intensity, representative_scan = operations.averaged_spectrum(reader, rt_window, mode=mode, scan_indices=scan_indices)
-    peaks = operations.profile_peaks(mz, intensity, mz_range=mz_range, top_n=top_n)
+    peaks = operations.spectrum_peaks(mz, intensity, reader.spectra, mz_range=mz_range, top_n=top_n)
     return _with_ms2({
+        "spectra": reader.spectra,
         "rt_window": list(rt_window),
         "representative_scan": int(representative_scan),
         "representative_rt": float(reader.RT_list[representative_scan]),
@@ -288,7 +320,7 @@ def spectrum(
 
 
 def map_spots(
-    reader: AgilentReader,
+    reader: MSData,
     *,
     top_n: int = 20,
     rt_range: tuple[float, float] | None = None,
@@ -297,7 +329,7 @@ def map_spots(
     """The most intense spots of the run's m/z x RT map of MS1 scans, as the m/z-RT map window shows it."""
     mz_rt_map = maps.built_map(reader)
     spots = maps.strongest_spots(mz_rt_map, top_n=top_n, rt_range=rt_range, mz_range=mz_range)
-    return {"bin_ppm": mz_rt_map.mid.bin_ppm, "spots": [_spot_dict(spot) for spot in spots]}
+    return {"spectra": reader.spectra, "bin_ppm": mz_rt_map.mid.bin_ppm, "spots": [_spot_dict(spot) for spot in spots]}
 
 
 def compare_runs(
@@ -309,17 +341,21 @@ def compare_runs(
     min_fold_change: float = 2.0,
     rt_range: tuple[float, float] | None = None,
     mz_range: tuple[float, float] | None = None,
+    spectra: str | None = None,
 ) -> dict:
     """Where the query's m/z x RT map differs most from the reference's, aligned in RT: the window's B - A map. D is
-    about the log fold change where both are strong, so min_fold_change is a least |D| of ln(min_fold_change)."""
-    map_a = maps.built_map(runs.get(reference))
-    map_b = maps.built_map(runs.get(query))
+    about the log fold change where both are strong, so min_fold_change is a least |D| of ln(min_fold_change). Both
+    runs are read of the spectra (if None, those chosen of the reference), so that their intensities compare."""
+    spectra = chosen_spectra(reference, spectra)
+    map_a = maps.built_map(runs.get(reference, spectra))
+    map_b = maps.built_map(runs.get(query, spectra))
     comparison = maps.compare_maps(
         map_a, map_b, top_n=top_n, min_difference=float(np.log(min_fold_change)), rt_range=rt_range, mz_range=mz_range,
     )
     return {
         "reference": map_a.ms_data_model.file_path.name,
         "query": map_b.ms_data_model.file_path.name,
+        "spectra": spectra,
         "bin_ppm": map_a.mid.bin_ppm,
         "scale": comparison.scale,
         "normalization": comparison.normalization,
@@ -450,22 +486,33 @@ def quantify_targets(
     run_peaks: RunPeaksStore | None = None,
     rpd_csv_file: str | Path | None = None,
     max_rows: int = 200,
+    spectra: str | Sequence[str] | None = None,
+    saturation_height: float | None = None,
 ) -> dict:
     """The values of the targets in the runs -- area, height, peak top and the rest, as the .rpd.csv export has
     them --, a row per target and run; written as a .rpd.csv file too if rpd_csv_file is given. targets, then
     specs (target_from_spec), numbered on from them; in the windows of run_peaks, as rpd_csv.measure takes them.
+    The runs are read of spectra, one for all or one each, or if None of those chosen of the first run, for all;
+    the values of centroid spectra are not to be compared with those of a profile.
+
+    Each row has its warnings (quantification.quantity_warnings, of saturation_height), and flagged lists every
+    row with one (up to max_rows of them), also those beyond the rows returned: the rows to look at again, of their
+    XIC.
 
     The runs are opened for the call, all at once, not from a RunCache: each is read for every target.
     """
     if not paths:
         raise ValueError("No runs to quantify the targets in")
+    if spectra is None:
+        spectra = chosen_spectra(paths[0])
+    spectra_of_runs = [spectra] * len(paths) if isinstance(spectra, str) else list(spectra)
+    if len(spectra_of_runs) != len(paths):
+        raise ValueError("Give the spectra of each run, or one for all")
     output = None if rpd_csv_file is None else new_rpd_csv_path(rpd_csv_file)
     readers = []
     try:
-        for path in paths:
-            reader = AgilentReader()
-            reader.load(run_path(path))
-            readers.append(reader)
+        for path, spectra_of_run in zip(paths, spectra_of_runs):
+            readers.append(open_run(path, spectra_of_run))
         runs = [rpd_csv.Run(reader, reader.file_path) for reader in readers]
         first = max((target.index for target in targets), default=0) + 1
         targets = [*targets, *(target_from_spec(spec, first + i, readers, merge_ppm) for i, spec in enumerate(specs))]
@@ -478,37 +525,57 @@ def quantify_targets(
     finally:
         for reader in readers:
             reader.close()
+    warnings = [quantity_warnings(row.quantity, saturation_height=saturation_height) for row in measured]
     return {
         "n_targets": len(targets),
         "runs": [run.path.name for run in runs],
+        "spectra": spectra_of_runs,
         "merge_ppm": merge_ppm,
         "rpd_csv": None if output is None else str(output),
         "n_rows": len(measured),
         "truncated": len(measured) > max_rows,
-        "rows": [_measured_dict(row) for row in measured[:max_rows]],
+        "rows": [_measured_dict(row, row_warnings) for row, row_warnings in zip(measured[:max_rows], warnings)],
+        # an object, not a list of records, so that a table of the answer (the CLI's TSV) is of the rows alone
+        "flagged": {
+            "n_rows": sum(1 for row_warnings in warnings if row_warnings),
+            "rows": [
+                {"target": row.target.index, "name": row.target.name, "run": row.run.path.name, "warnings": row_warnings}
+                for row, row_warnings in zip(measured, warnings)
+                if row_warnings
+            ][:max_rows],
+        },
     }
 
 
-def _measured_dict(row: rpd_csv.Measured) -> dict:
+def _measured_dict(row: rpd_csv.Measured, warnings: list[str]) -> dict:
     return {
         "target": row.target.index,
         "name": row.target.name,
         "run": row.run.path.name,
         **asdict(row.quantity),
         "note": row.note,
+        "warnings": warnings,
     }
+
+
+def _d_folder(path: str | Path) -> Path:
+    """The resolved path of a .d folder, the runs the RT alignment reads (of their profile); ValueError if not one."""
+    path = run_path(path)
+    if is_rpd(path):
+        raise ValueError(f"The RT alignment reads the profile of .d folders, not .rpd files: {path.name}")
+    return path
 
 
 def scale_candidates(runs: RunCache, path: str | Path, **options) -> dict:
     """Candidate asinh scales of a run; the caller chooses one. options: `alignment.OPTIONS`."""
-    found = alignment_scale_candidates(runs.get(path), with_options(AlignmentConfig(), **options))
+    found = alignment_scale_candidates(runs.get(_d_folder(path), "profile"), with_options(AlignmentConfig(), **options))
     return {"run": found["run"]["name"], "n_scans": found["n_scans"], "scale_candidates": found["scale_candidates"]}
 
 
 def align_runs(reference: str | Path, query: str | Path, output_dir: str | Path, **options) -> dict:
     """Map the query's RTs onto the reference's and save the result in output_dir. options: `alignment.OPTIONS`."""
     output_dir = Path(output_dir).expanduser().resolve()
-    result, figures = align_and_save(run_path(reference), run_path(query), output_dir, with_options(AlignmentConfig(), **options))
+    result, figures = align_and_save(_d_folder(reference), _d_folder(query), output_dir, with_options(AlignmentConfig(), **options))
     shift = result.mapping.transform(result.query_rt_seconds) - result.query_rt_seconds
     shift = shift[np.isfinite(shift)]
     return {

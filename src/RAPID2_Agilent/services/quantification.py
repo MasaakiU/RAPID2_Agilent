@@ -99,6 +99,24 @@ def quantify(
     )
 
 
+def quantity_warnings(quantity: Quantity, *, saturation_height: float | None = None) -> list[str]:
+    """What to look at again in a target's values in a run, before trusting them, of its XIC: a peak top at the
+    first or last scan used, where the peak may go on beyond the RT window (or the window holds only a slope); and,
+    if saturation_height is given, a height at or above it, where the detector may have saturated (the level
+    differs by instrument and is not known here). A trace of no signal is not warned of -- its height of 0 says it,
+    and an XIC would show nothing more --; too few scans and scans left out are told of by rpd_csv's note."""
+    warnings = []
+    if quantity.rt_peaktop is not None and quantity.rt_peaktop in (quantity.rt_first, quantity.rt_last):
+        edge = "first" if quantity.rt_peaktop == quantity.rt_first else "last"
+        warnings.append(f"the peak top is at the {edge} scan of the RT window: the peak may go on beyond it")
+    if saturation_height is not None and quantity.height is not None and quantity.height >= saturation_height:
+        warnings.append(
+            f"the height, {quantity.height:g}, is at or above saturation_height ({saturation_height:g}): "
+            "the detector may have saturated"
+        )
+    return warnings
+
+
 def quantify_target(
     data: MSData, target: Target, *, run_peaks: RunPeaks | None = None, merge_ppm: float = 0.0
 ) -> Quantity:

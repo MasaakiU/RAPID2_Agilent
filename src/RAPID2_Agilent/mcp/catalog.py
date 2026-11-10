@@ -11,7 +11,7 @@ The catalog is that answer written down: the tools as the window's own
 registry describes them, and the name and version it introduces itself by.
 Each window writes it when it starts serving, and the relay answers the
 handshake and the tool list from it when no window is listening. It also
-names the analysis tools, which read .d folders by path and never touch a
+names the analysis tools, which read runs by path and never touch a
 window, so that the relay can run those itself while no window is listening.
 Everything else is forwarded as before -- a call that needs RAPID2 still needs
 RAPID2, and `rapid2_launch`, which the relay answers itself, can start it.

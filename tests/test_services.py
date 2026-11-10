@@ -8,12 +8,14 @@ import numpy as np
 import pytest
 
 from RAPID2_Agilent import services
+from RAPID2_Agilent.io.rpd_file import write_rpd
 from RAPID2_Agilent.models.chemistry import ion_mz
 from RAPID2_Agilent.models.rpd_model import AgilentDModel
 from RAPID2_Agilent.models.target import TraceType
 from RAPID2_Agilent.services import operations, reports
 from RAPID2_Agilent.services.reports import _trace
 from tests.data_paths import DATA_DIR, require
+from tests.test_rpd_file import _data as rpd_data
 
 
 DATA_PATH = DATA_DIR / "dummy_RP_2min_neg.d"
@@ -107,6 +109,97 @@ def test_find_runs_lists_d_folders_without_entering_them(tmp_path):
         (tmp_path / name / "AcqData").mkdir(parents=True)
     names = [run["name"] for run in services.find_runs(tmp_path)]
     assert names == ["a.d", "b.D"]
+
+
+def test_find_runs_lists_rpd_files_too(tmp_path):
+    (tmp_path / "a.d" / "AcqData").mkdir(parents=True)
+    (tmp_path / "nested").mkdir()
+    for name in ("nested/c.rpd", "nested/c.rpd.csv", "a.d/inside.rpd"):
+        (tmp_path / name).write_bytes(b"")
+    (tmp_path / "folder.rpd").mkdir()
+    names = [run["name"] for run in services.find_runs(tmp_path)]
+    assert names == ["a.d", "c.rpd"]
+
+
+def _write_sample_info(run, **fields):
+    """A .d folder whose AcqData/sample_info.xml has the fields, as MassHunter writes it."""
+    entries = "".join(
+        f"<Field><Name>{name}</Name><DisplayName>{name}</DisplayName><Value>{value}</Value></Field>"
+        for name, value in fields.items()
+    )
+    (run / "AcqData").mkdir(parents=True)
+    (run / "AcqData" / "sample_info.xml").write_text(f"<SampleInfo><Version>1.0</Version>{entries}</SampleInfo>")
+
+
+def test_find_runs_tells_each_runs_sample_and_lists_them_in_injection_order(tmp_path):
+    _write_sample_info(
+        tmp_path / "10_b.d", **{"Sample Name": "b", "Sample Type": "Sample", "AcqTime": "2026-10-30T18:09:38.3899688-04:00"}
+    )
+    _write_sample_info(
+        tmp_path / "2_a.d", **{"Sample Name": "a", "Sample Position": "P1-A1", "AcqTime": "2026-10-30T22:09:38.1-04:00"}
+    )
+    _write_sample_info(tmp_path / "1_blank.d", **{"Sample Name": "blank", "Sample Type": "Blank", "AcqTime": "2026-10-30T21:00:00Z"})
+    (tmp_path / "0_none.d" / "AcqData").mkdir(parents=True)
+    by_path = services.find_runs(tmp_path)
+    assert [run["name"] for run in by_path] == ["0_none.d", "10_b.d", "1_blank.d", "2_a.d"]
+    assert by_path[3] == {
+        "name": "2_a.d", "path": str(tmp_path / "2_a.d"), "sample_name": "a", "position": "P1-A1",
+        "acquired_at": "2026-10-30T22:09:38.1-04:00",
+    }
+    # 21:00 UTC is 17:00 at -04:00, before the others; a run not told of it last
+    by_acquisition = services.find_runs(tmp_path, order="acquired")
+    assert [run["name"] for run in by_acquisition] == ["1_blank.d", "10_b.d", "2_a.d", "0_none.d"]
+    with pytest.raises(ValueError, match="order is path or acquired"):
+        services.find_runs(tmp_path, order="name")
+
+
+def test_describe_run_gives_the_sample_information(runs):
+    summary = reports.describe_run(runs.get(require(DATA_PATH)))
+    assert summary["sample_info"]["Sample Name"] == "Sample1" and "AcqTime" in summary["sample_info"]
+    assert "" not in summary["sample_info"].values()
+
+
+def test_a_rpd_file_is_a_run_read_of_the_spectra_it_holds(runs, tmp_path):
+    write_rpd(tmp_path / "x.rpd", rpd_data("discrete"))
+    reader = runs.get(tmp_path / "x.rpd")
+    assert reader.spectra == "centroid" and runs.get(tmp_path / "x.rpd", "centroid") is reader
+    summary = reports.describe_run(reader)
+    assert summary["stored_spectra"] == {"centroid": (tmp_path / "x.rpd").stat().st_size}
+    assert summary["n_scans"] == 4 and "ms1_centroid_mz_range" in summary
+    with pytest.raises(ValueError, match="x.rpd has no profile spectra, only centroid spectra"):
+        runs.get(tmp_path / "x.rpd", "profile")
+    xic = reports.xic(reader, 150.2, 0.005, "m/z", max_points=None)
+    assert xic["spectra"] == "centroid" and len(xic["rt"]) == 4
+    with pytest.raises(ValueError, match="No .rpd file"):
+        services.run_path(tmp_path / "missing.rpd")
+    with pytest.raises(ValueError, match="reads the profile of .d folders"):
+        reports.scale_candidates(runs, tmp_path / "x.rpd")
+
+
+def test_targets_are_quantified_in_rpd_files_of_the_first_runs_spectra(tmp_path):
+    write_rpd(tmp_path / "a.rpd", rpd_data("discrete"))
+    write_rpd(tmp_path / "b.rpd", rpd_data("continuous"))
+    spec = {"adduct": "[M+H]+", "rt": 0.25, "rt_tolerance": 0.2, "mz": 150.2, "mz_tolerance": 0.005, "mz_tolerance_unit": "m/z"}
+    quantified = reports.quantify_targets([tmp_path / "a.rpd"], specs=[spec], rpd_csv_file=tmp_path / "out.rpd.csv")
+    assert quantified["spectra"] == ["centroid"] and quantified["n_rows"] == 1 and quantified["rows"][0]["height"] > 0
+    assert (tmp_path / "out.rpd.csv").is_file()
+    # every row has its warnings; flagged lists those with any
+    row = quantified["rows"][0]
+    assert isinstance(row["warnings"], list) and quantified["flagged"]["n_rows"] == (1 if row["warnings"] else 0)
+    saturated = reports.quantify_targets([tmp_path / "a.rpd"], specs=[spec], saturation_height=1)
+    assert saturated["flagged"]["n_rows"] == 1
+    assert saturated["flagged"]["rows"][0]["run"] == "a.rpd" and "saturated" in saturated["flagged"]["rows"][0]["warnings"][-1]
+    # a profile and a centroid file are not read as one kind
+    with pytest.raises(ValueError, match="b.rpd has no centroid spectra, only profile spectra"):
+        reports.quantify_targets([tmp_path / "a.rpd", tmp_path / "b.rpd"], specs=[spec])
+
+
+def test_a_run_of_centroid_spectra_only_is_read_of_them_unless_asked_otherwise(tmp_path):
+    (tmp_path / "x.d" / "AcqData").mkdir(parents=True)
+    (tmp_path / "x.d" / "AcqData" / "MSPeak.bin").write_bytes(b"x")
+    assert services.chosen_spectra(tmp_path / "x.d") == "centroid"
+    with pytest.raises(ValueError, match="x.d has no profile spectra, only centroid spectra"):
+        services.chosen_spectra(tmp_path / "x.d", "profile")
 
 
 def test_calculate_ion_matches_chemistry():
@@ -369,3 +462,38 @@ def test_two_different_runs_differ_both_ways_by_at_least_the_fold_change(runs):
         assert len(differences) == 5 and differences == sorted(differences, reverse=True)
         assert min(differences) >= np.log(4)
     json.dumps(compared)
+
+
+def test_a_run_is_kept_open_of_each_spectra_apart(runs, tmp_path):
+    profile = runs.get(require(DATA_PATH))
+    centroid = runs.get(DATA_PATH, "centroid")
+    assert (profile.spectra, centroid.spectra) == ("profile", "centroid")
+    assert runs.get(DATA_PATH, "centroid") is centroid and runs.get(DATA_PATH) is profile
+    (tmp_path / "x.d" / "AcqData").mkdir(parents=True)
+    with pytest.raises(ValueError, match="x.d has no profile spectra, only no spectra"):
+        services.open_run(tmp_path / "x.d")
+    with pytest.raises(ValueError, match="spectra is profile or centroid"):
+        services.open_run(DATA_PATH, "peaks")
+
+
+def test_the_peaks_of_centroid_spectra_are_every_centroid_not_only_the_local_maxima():
+    mz = np.array([100.0, 100.5, 101.0, 102.0, 103.0])
+    intensity = np.array([10.0, 50.0, 20.0, 0.0, 5.0])
+    # 100.0 and 101.0, lower than 100.5 beside them, are centroids of their own
+    assert operations.spectrum_peaks(mz, intensity, "centroid").tolist() == [1, 2, 0, 4]
+    assert operations.spectrum_peaks(mz, intensity, "profile").tolist() == [1]
+    assert operations.spectrum_peaks(mz, intensity, "centroid", mz_range=(100.2, 102.5), top_n=1).tolist() == [1]
+
+
+def test_reports_say_the_spectra_read(runs):
+    reader = runs.get(require(DATA_PATH), "centroid")
+    summary = reports.describe_run(reader)
+    assert summary["spectra"] == "centroid" and summary["stored_spectra"].keys() == {"profile", "centroid"}
+    assert summary["ms1_centroid_mz_range"][0] < summary["ms1_centroid_mz_range"][1]
+    assert "ms1_profile_mz_range" not in summary
+    assert reports.xic(reader, 965.9998)["spectra"] == "centroid"
+    spectrum = reports.spectrum(reader, 1.0, 0.05, top_n=200)
+    mz, intensity, _ = operations.averaged_spectrum(reader, (0.95, 1.05), scan_indices=reader.scan_indices_for_ms_level(1))
+    # the strongest 200 centroids, each a peak
+    assert [peak["intensity"] for peak in spectrum["peaks"]] == sorted(intensity, reverse=True)[:200]
+    json.dumps([summary, spectrum])

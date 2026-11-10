@@ -129,3 +129,101 @@ def ion_mz(formula: str, adduct: str) -> float:
     a = parse_adduct(adduct)
     ion_mass = a.multiplier * formula_mass(formula) + a.mass_shift - a.charge * ELECTRON_MASS
     return ion_mass / abs(a.charge)
+
+
+def ion_composition(formula: str, adduct: str) -> tuple[dict[str, int], int]:
+    """The atoms of the ion made from a neutral formula and an adduct, as parse_formula counts them, and its signed
+    charge; ValueError if the adduct takes away atoms the formula has not."""
+    m = _ADDUCT_SYNTAX.fullmatch(adduct)
+    if m is None:
+        raise ValueError(f"Invalid adduct: {adduct!r} (expected e.g. [M+H]+, [M-H]-, [M+2H]2+)")
+    multiplier_text, terms, charge_text, sign = m.groups()
+    counts = {symbol: n * int(multiplier_text or 1) for symbol, n in parse_formula(formula).items()}
+    for term_sign, count, group in _ADDUCT_TERM.findall(terms):
+        for symbol, n in parse_formula(SOLVENT_FORMULAS.get(group, group)).items():
+            counts[symbol] = counts.get(symbol, 0) + (1 if term_sign == "+" else -1) * n * int(count or 1)
+    short = sorted(symbol for symbol, n in counts.items() if n < 0)
+    if short:
+        raise ValueError(f"{adduct} takes away more {', '.join(short)} than {formula} has")
+    return {symbol: n for symbol, n in counts.items() if n}, int(charge_text or 1) * (1 if sign == "+" else -1)
+
+
+@cache
+def natural_isotopes() -> dict[str, tuple[tuple[int, float, float], ...]]:
+    """Of each element, the isotopes found in nature, (mass number, mass, abundance), as the NIST table has them;
+    2H under H."""
+    isotopes: dict[str, list[tuple[int, float, float]]] = {}
+    for fields in _isotope_table():
+        if fields["Isotopic Composition"] == "":
+            continue
+        symbol = "H" if fields["Atomic Symbol"] in ("D", "T") else fields["Atomic Symbol"]
+        isotopes.setdefault(symbol, []).append((
+            int(fields["Mass Number"]),
+            float(fields["Relative Atomic Mass"].split("(")[0]),
+            float(fields["Isotopic Composition"].split("(")[0]),
+        ))
+    return {symbol: tuple(found) for symbol, found in isotopes.items()}
+
+
+@dataclass(frozen=True)
+class IsotopePeak:
+    """The ions of a nominal mass shift from the monoisotopic ion (M+shift), all their fine structure together."""
+    shift: int
+    mz: float  # their abundance-weighted mean m/z
+    fraction: float  # of all the ions
+
+
+# isotopologues rarer than this, of all the ions, are dropped as the pattern is built
+_PATTERN_PRUNE = 1e-12
+
+
+def isotope_pattern(formula: str, adduct: str) -> list[IsotopePeak]:
+    """The isotope pattern of the ion made from a neutral formula and an adduct, by nominal mass: the shifts from the
+    monoisotopic ion of the most abundant isotope of each element, ascending (one below 0 where an element's most
+    abundant isotope is not its lightest, as of B). Atoms written as an isotope ([13C], [2H], D) are of it alone;
+    the others are of their natural abundance (NIST)."""
+    composition, charge = ion_composition(formula, adduct)
+    masses = _atom_masses()
+    natural = natural_isotopes()
+    # the pattern as {shift: (fraction, mean mass)}, starting from the atoms of one isotope
+    pattern = {0: (1.0, sum(masses[symbol] * n for symbol, n in composition.items() if symbol not in natural))}
+    for symbol, n in composition.items():
+        if symbol in natural:
+            pattern = _convolved(pattern, _power(_element_pattern(natural[symbol]), n))
+    return [
+        IsotopePeak(shift, (mass - charge * ELECTRON_MASS) / abs(charge), fraction)
+        for shift, (fraction, mass) in sorted(pattern.items())
+    ]
+
+
+def _element_pattern(isotopes: tuple[tuple[int, float, float], ...]) -> dict[int, tuple[float, float]]:
+    """One atom's pattern, its shifts from its most abundant isotope's mass number."""
+    reference = max(isotopes, key=lambda isotope: isotope[2])[0]
+    return {number - reference: (abundance, mass) for number, mass, abundance in isotopes}
+
+
+def _convolved(a: dict[int, tuple[float, float]], b: dict[int, tuple[float, float]]) -> dict[int, tuple[float, float]]:
+    """The pattern of two parts together: of each shift, the fraction and the mean mass, exact as the means add."""
+    fractions: dict[int, float] = {}
+    mass_sums: dict[int, float] = {}
+    for shift_a, (fraction_a, mass_a) in a.items():
+        for shift_b, (fraction_b, mass_b) in b.items():
+            fraction = fraction_a * fraction_b
+            if fraction < _PATTERN_PRUNE:
+                continue
+            shift = shift_a + shift_b
+            fractions[shift] = fractions.get(shift, 0.0) + fraction
+            mass_sums[shift] = mass_sums.get(shift, 0.0) + fraction * (mass_a + mass_b)
+    return {shift: (fraction, mass_sums[shift] / fraction) for shift, fraction in fractions.items()}
+
+
+def _power(pattern: dict[int, tuple[float, float]], n: int) -> dict[int, tuple[float, float]]:
+    """The pattern of n atoms of one pattern, by squaring."""
+    result = {0: (1.0, 0.0)}
+    while n:
+        if n & 1:
+            result = _convolved(result, pattern)
+        n >>= 1
+        if n:
+            pattern = _convolved(pattern, pattern)
+    return result

@@ -7,7 +7,8 @@ from RAPID2_Agilent.services import operations
 
 
 class PeakLabelItem(pg.GraphicsObject):
-    """The m/z of the peak tops of a profile spectrum, small above them to the right.
+    """The m/z of the peak tops of a spectrum (of a profile, its local maxima; of centroids, each), small above
+    them to the right.
 
     The most intense peaks first, each only where its label lies clear of those already placed, of the
     spectrum's line and of ``obstacles`` (labels of the plot): zoomed in, the peaks lie farther apart and more
@@ -44,12 +45,14 @@ class PeakLabelItem(pg.GraphicsObject):
         view_box.sigRangeChanged.connect(self.invalidate)
         view_box.sigResized.connect(self.on_resized)
 
-    def set_spectrum(self, mz, intensity):
-        """mz ascending."""
+    def set_spectrum(self, mz, intensity, spectra: str = "profile"):
+        """mz ascending; spectra, MSData's: "profile" or "centroid"."""
         self.mz = np.asarray(mz, dtype=float)
         self.intensity = np.asarray(intensity, dtype=float)
         self.padded_intensity = np.append(self.intensity, -np.inf)
-        apexes = operations.profile_peaks(self.mz, self.intensity) if len(self.mz) > 2 else np.array([], dtype=np.intp)
+        apexes = (
+            operations.spectrum_peaks(self.mz, self.intensity, spectra) if len(self.mz) > 2 else np.array([], dtype=np.intp)
+        )
         self.apex_mz = self.mz[apexes]
         self.apex_intensity = self.intensity[apexes]
         self.invalidate()

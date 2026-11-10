@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rapid2-agilent": {
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "exec \"$HOME/Library/Application Support/RAPID2_Agilent/bin/rapid2-mcp-relay\""
+      ]
+    }
+  }
+}

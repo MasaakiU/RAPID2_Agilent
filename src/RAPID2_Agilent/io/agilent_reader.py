@@ -4,6 +4,7 @@ import mmap
 import pprint
 import struct
 from collections import Counter
+from collections.abc import Callable
 import numpy as np
 from lxml import etree
 from pathlib import Path
@@ -20,6 +21,8 @@ from ._native.lzf_profile import rewrite_lzf_records
 
 class AgilentReader:
     """Read Agilent .d scans without importing Qt or GUI models."""
+
+    spectra = "profile"  # MSData's: AgilentCentroidReader reads the centroid spectra
 
     def __init__(self):
         self.file_path: Path | None = None
@@ -64,27 +67,11 @@ class AgilentReader:
         return self.file_path / "AcqData"
 
     # load_file_related_methods
-    def load(self, folder_path: Path):
+    def load(self, folder_path: Path, on_progress: Callable[[int, int], None] | None = None):
+        """Read a .d folder; on_progress(done, total) told of the scans read as they are, which may raise to stop."""
         self.close()
         self.file_path = Path(folder_path)
-        # parse MSTS
-        for time_seg in etree.parse(self.AcqData_path / "MSTS.xml").getroot().findall("TimeSegment"):
-            self.N_scans += int(time_seg.find("NumOfScans").text)
-        # parse MSScan
-        self.ms_scan_info = MSScanInfo(
-            xsd_path=self.AcqData_path / "MSScan.xsd", 
-            bin_path=self.AcqData_path / "MSScan.bin", 
-            N_scans=self.N_scans
-        )
-        # parse_MSCalib
-        self.ms_calib_info = MSCalibInfo(
-            xml_path=self.AcqData_path / "DefaultMassCal.xml",
-            bin_path=self.AcqData_path / "MSMassCal.bin", 
-            mass_cal_offsets=[
-                self.ms_scan_info.get_scan_info(i, "MassCalOffset")
-                for i in range(self.N_scans)
-            ]
-        )
+        self.N_scans, self.ms_scan_info, self.ms_calib_info = read_scan_records(self.AcqData_path)
         # parse_MSProfile
         self.ms_profile = MSProfile(
             bin_path=self.AcqData_path / "MSProfile.bin",
@@ -96,7 +83,8 @@ class AgilentReader:
             spectrum["SpectrumOffset"], spectrum["ByteCount"] = offset, byte_count
         self.ms_profile.set_checkpoints(
             [self.ms_scan_info.get_spectrum_info(i, self.spectrum_param_index, "SpectrumOffset") for i in range(self.N_scans)],
-            [self.ms_scan_info.get_spectrum_info(i, self.spectrum_param_index, "ByteCount") for i in range(self.N_scans)]
+            [self.ms_scan_info.get_spectrum_info(i, self.spectrum_param_index, "ByteCount") for i in range(self.N_scans)],
+            on_progress,
         )
         self.ms_calib_info.configure_poly_cache(
             scan_grids=[
@@ -107,31 +95,8 @@ class AgilentReader:
             ],
             calibration_ids=[self.ms_scan_info.get_scan_info(i, "CalibrationID") for i in range(self.N_scans)],
         )
-        # RT_list is extracted because it will be used frequently
-        self.RT_list = np.array([
-            self.ms_scan_info.get_scan_info(i, "ScanTime")
-            for i in range(self.N_scans)
-        ])
-        self.MS_level_list = np.array([
-            self.ms_scan_info.get_scan_info(i, "MSLevel")
-            for i in range(self.N_scans)
-        ])
-        # the codes of the ionization and of the kind of scan, e.g. 64 (ESI); 1 (Scan) and 512 (ProductIon)
-        self.ion_mode_list, self.scan_type_list = (
-            np.array([self.ms_scan_info.get_scan_info(i, field) for i in range(self.N_scans)], dtype=np.int64)
-            for field in ("IonMode", "ScanType")
-        )
-        # +1 for positive ions, -1 for negative: the sign of an adduct's charge (IonPolarity 0 and 1; 0 if neither)
-        self.polarity_list = np.array([
-            {0: 1, 1: -1}.get(self.ms_scan_info.get_scan_info(i, "IonPolarity"), 0)
-            for i in range(self.N_scans)
-        ])
-        # which MS2 scans to use is chosen by these; the older MSScan.xsd (e.g. of 2022) has no MzOfInterest and
-        # MzIsolationWidth, 0 then
-        self.precursor_mz_list, self.isolation_width_list, self.collision_energy_list = (
-            np.array([self.ms_scan_info.scan_info[i].get(field, 0.0) for i in range(self.N_scans)], dtype=np.float64)
-            for field in ("MzOfInterest", "MzIsolationWidth", "CollisionEnergy")
-        )
+        for name, values in scan_lists(self.ms_scan_info).items():
+            setattr(self, name, values)
 
     def close(self):
         """Release the mapped profile and return to the unloaded state."""
@@ -445,6 +410,52 @@ class AgilentReader:
         return self.RT_list[scan_indices], np.array([self.ms_scan_info.get_scan_info(int(i), field) for i in scan_indices])
 
 
+def read_scan_records(acq_data_path: Path) -> Tuple[int, "MSScanInfo", "MSCalibInfo"]:
+    """The number of scans of a run (MSTS.xml), their records (MSScan) and their mass calibrations (MSMassCal); not
+    their spectra, which each reader reads."""
+    N_scans = sum(
+        int(time_seg.find("NumOfScans").text)
+        for time_seg in etree.parse(acq_data_path / "MSTS.xml").getroot().findall("TimeSegment")
+    )
+    ms_scan_info = MSScanInfo(
+        xsd_path=acq_data_path / "MSScan.xsd",
+        bin_path=acq_data_path / "MSScan.bin",
+        N_scans=N_scans
+    )
+    ms_calib_info = MSCalibInfo(
+        xml_path=acq_data_path / "DefaultMassCal.xml",
+        bin_path=acq_data_path / "MSMassCal.bin",
+        mass_cal_offsets=[ms_scan_info.get_scan_info(i, "MassCalOffset") for i in range(N_scans)]
+    )
+    return N_scans, ms_scan_info, ms_calib_info
+
+
+def scan_lists(ms_scan_info: "MSScanInfo") -> Dict[str, np.ndarray]:
+    """Of each scan, by the names of the readers' attributes: its RT, MS level, ionization and kind of scan,
+    polarity, and precursor m/z, isolation width and collision energy."""
+    records = ms_scan_info.scan_info
+    return {
+        # RT_list is extracted because it will be used frequently
+        "RT_list": np.array([record["ScanTime"] for record in records]),
+        "MS_level_list": np.array([record["MSLevel"] for record in records]),
+        # the codes of the ionization and of the kind of scan, e.g. 64 (ESI); 1 (Scan) and 512 (ProductIon)
+        "ion_mode_list": np.array([record["IonMode"] for record in records], dtype=np.int64),
+        "scan_type_list": np.array([record["ScanType"] for record in records], dtype=np.int64),
+        # +1 for positive ions, -1 for negative: the sign of an adduct's charge (IonPolarity 0 and 1; 0 if neither)
+        "polarity_list": np.array([{0: 1, 1: -1}.get(record["IonPolarity"], 0) for record in records]),
+        # which MS2 scans to use is chosen by these; the older MSScan.xsd (e.g. of 2022) has no MzOfInterest and
+        # MzIsolationWidth, 0 then
+        **{
+            name: np.array([record.get(field, 0.0) for record in records], dtype=np.float64)
+            for name, field in (
+                ("precursor_mz_list", "MzOfInterest"),
+                ("isolation_width_list", "MzIsolationWidth"),
+                ("collision_energy_list", "CollisionEnergy"),
+            )
+        },
+    }
+
+
 class MSScanInfo():
     def __init__(self, xsd_path: Path, bin_path: Path, N_scans: int):
         self.N_repeat_dict: Dict = {}
@@ -653,8 +664,11 @@ class MSCalibInfo():
 
     def mz_values(self, scan_index: int, calib_id: int, start_t: float, delta_t: float, datapoint_indices: np.ndarray) -> np.ndarray:
         """The calibrated m/z of datapoint indices of the scan, as mz_function gives them one at a time."""
+        return self.mz_at_times(scan_index, calib_id, start_t + delta_t * np.asarray(datapoint_indices, dtype=np.float64))
+
+    def mz_at_times(self, scan_index: int, calib_id: int, t_value: np.ndarray) -> np.ndarray:
+        """The calibrated m/z of flight times of the scan: of its profile's grid, or the centroids' of MSPeak.bin."""
         coeff, base, left, right, poly_coeffs = self._calibration_terms(scan_index, calib_id)
-        t_value = start_t + delta_t * np.asarray(datapoint_indices, dtype=np.float64)
         polynomial_correction = np.polynomial.polynomial.polyval(np.clip(t_value, left, right), poly_coeffs)
         primary_term = coeff * (t_value - base)
         return primary_term * primary_term - polynomial_correction
@@ -750,9 +764,13 @@ class MSProfile():
         self._buffer = buffer
         self._mm_view = memoryview(buffer)
         return list(zip(offset_list.tolist(), byte_count_list.tolist()))
-    def set_checkpoints(self, offset_list: List[int], compressed_len_list: List[int]):
+    def set_checkpoints(self, offset_list: List[int], compressed_len_list: List[int],
+                        on_progress: Callable[[int, int], None] | None = None):
+        """The checkpoints of each scan's record; on_progress(done, total) told of the scans done, most of a load."""
         for i, (offset, compressed_len) in enumerate(zip(offset_list, compressed_len_list)):
             self.check_points_list.append(self.build_checkpoints(offset, compressed_len, stride_bytes=2048))
+            if on_progress is not None:
+                on_progress(i + 1, len(offset_list))
     def build_checkpoints(self, offset: int, compressed_len: int, stride_bytes=2048) -> CheckPoints:
         start_t, delta_t, N_datapoints, cur_idx = self.decode_header(offset)
         offsets_np, out_index_np, cur_size_np, n_filled, cur_idx = build_checkpoints(self._mm_view, offset, compressed_len, N_datapoints, cur_idx, stride_bytes)

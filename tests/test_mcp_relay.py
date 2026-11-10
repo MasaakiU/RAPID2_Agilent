@@ -1168,6 +1168,18 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("claude mcp add rapid2 -- ", command)
         self.assertIn("'/Users/x/Library/Application Support/RAPID2/bin/", command)
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX registration line")
+    def test_codex_is_registered_by_the_same_line_of_its_own_command(self):
+        command = launcher.registration_command(
+            Path("/Users/x/Library/Application Support/RAPID2/bin/rapid2-mcp-relay"),
+            "rapid2",
+            "codex",
+        )
+
+        self.assertTrue(command.startswith("codex mcp add rapid2 -- '/Users/x/"), command)
+        with self.assertRaises(ValueError):
+            launcher.registration_command(Path("/x"), "rapid2", "cursor")
+
     def test_the_windows_registration_command_is_quoted_for_powershell(self):
         # An apostrophe in the user name is the case POSIX quoting gets wrong
         # here: it would backslash-escape one, which PowerShell reads as part

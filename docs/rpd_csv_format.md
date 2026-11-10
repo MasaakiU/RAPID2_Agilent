@@ -70,7 +70,7 @@ Targets パネルの「…」メニュー（Import targets… / Export targets�
 | --- | --- | --- |
 | `file_path` | データファイルのパス | 同じ |
 | `file_name` | データファイルの名前 | 同じ |
-| `data_hash` | データの SHA-256（§3.3）。同一のデータかの最終確認に使う | 同じ名前・同じ役割。値の互換はない（RAPID2 は .rpd から計算） |
+| `data_hash` | データの SHA-256（§3.3）。同一のデータかの最終確認に使う | 同じ名前・同じ役割。.d の値に互換はない（RAPID2 は .rpd から計算）。.rpd ファイルを開いたときは RAPID2 と同じ値 |
 | `scan_sha256` | スキャン表の SHA-256（§3.3）。元のファイルの候補を探す鍵 | 新規 |
 | `scan_settings` | その行の計算に使ったスキャンの、イオン化法・極性・スキャンの種類（例：`ESI+ Scan`、`ESI- ProductIon`）。§3.4 | 同じ（RAPID2 は `ESI+ QuadrupoleTimeOfFlight SCAN` など） |
 | `m/z_btm`, `m/z_top` | 実際に使う m/z 窓。ppm も m/z に換算。TIC/BPC は空欄 | 同じ（RAPID2 は TIC で 0 / inf） |
@@ -92,6 +92,7 @@ RAPID2 の列のうち出さないもの：`is_TIC`（`trace_type` に置き換�
 - **`data_hash`**：`AcqData/` の `DefaultMassCal.xml`, `MSMassCal.bin`, `MSPeak.bin`, `MSProfile.bin`, `MSScan.bin` を、この順（アルファベット順）に、存在するものだけ流し込む。各ファイルにつき、`name.encode() + b"\0" + size.to_bytes(8, "little")` のあとに中身（1 MiB ずつのチャンクで読む）。
   - `DefaultMassCal.xml` を入れるのは、m/z の計算に使われるため（多項式のどの次数を使うかの `ValueUseFlags`。係数は `MSMassCal.bin` から読む）。普通は直接いじらない限り変わらない。
 - **含めないもの**：`*.tags` など後から増えるファイル、Results フォルダ、`.DS_Store`、`desktop.ini`、パス、更新時刻。reader が読む `MSTS.xml`（スキャン数）と `MSScan.xsd`（スキャン表の並び方）も構造の情報なので入れない。
+- **RAPID2 の `.rpd` ファイル**：`data_hash` はファイルの先頭に書かれた SHA-256（RAPID2 が `data_hash` に書き出したのと同じ値）。スキャン表を持たないので `scan_sha256` は空欄。
 - **計算のタイミング**：`data_hash` は大きなファイル（手元で 850 MB に 0.5 秒。ネットワークドライブではもっとかかる）を読むので、ファイルごとに1回だけ計算して覚えておき、Export のときに進捗を出しながら計算する。
 - **検証値**：
 
@@ -194,7 +195,7 @@ RAPID2 の `calc_chromatogram_auc` と同じ定義にする。そのうえで、
 - 使えるスキャンが2未満（RT 幅 0、極性が合わない、など）のときは、`N_scans (value used for calculation)`（0 か 1）のほかの結果列をすべて空欄にする。
 - `mz peaktop` の平均スペクトルは、XIC では m/z 窓の中だけで作る（全 m/z で作るのと同じ値で、約 20 倍速い）。格子は、使ったスキャンの RT の真ん中に最も近いスキャンのデータ点。
 - area は窓の中の点の合計から計算するので、m/z 窓の幅で値が変わる（RAPID2 と同じ定義。同じターゲットをファイル間で比べる用途なので問題ない）。
-- `area (deconvolved)` とその不確かさは、そのファイルの積分区間が、ピーク検出器の見つけたピーク（ターゲットに選ばれたもの）のときだけ書く。ほかの検出器、手で決めた区間、ピークが選ばれていないときは空欄。区間の点の値（`area` など）は、そのピークの範囲（形が頂上の 5% まで下がるところ）で計算する。
+- `area (deconvolved)` とその不確かさは、そのファイルの積分区間が、ピーク検出器の見つけたピーク（ターゲットに選ばれたもの）のときだけ書く。ほかの検出器、手で決めた区間、ピークが選ばれていないときは空欄。区間の点の値（`area` など）は、そのピークの範囲（形が頂上の 1% まで下がるところ）で計算する。
 
 ### 6.4 Export の操作と警告
 

@@ -7,7 +7,8 @@ Where new code goes, so that it is written in one place:
                 them. Add here first, then call it from the front ends.
 ``reports``     The same operations as JSON-serializable dicts, for the CLI and
                 the MCP tools: reductions for text (max_points, top_n) only.
-``runs``        Finding and opening .d folders by path.
+``runs``        Finding and opening runs by path (.d folders, of their profile or centroid
+                spectra, and .rpd files).
 ``quantification``  The area and the other values of a target's trace in a run.
 ``peak_detection``  The peaks of a target's trace in a run, and the one taken for the target's.
 ``rpd_csv``     Those values of the targets in the runs, written as a .rpd.csv file; and
@@ -26,6 +27,9 @@ configuration through `alignment.config.OPTIONS`, for the same reason.
 # it brings in the alignment package and scipy, which the GUI loads only once
 # the B - A map asks for them.
 from . import operations
-from .runs import RunCache, find_runs, run_path
+from .runs import RUN_ORDERS, SPECTRA, RunCache, chosen_spectra, find_runs, is_rpd, open_run, run_path, stored_spectra
 
-__all__ = ["RunCache", "find_runs", "operations", "run_path"]
+__all__ = [
+    "RUN_ORDERS", "SPECTRA", "RunCache", "chosen_spectra", "find_runs", "is_rpd", "open_run", "operations", "run_path",
+    "stored_spectra",
+]

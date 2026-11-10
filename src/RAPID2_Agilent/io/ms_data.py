@@ -12,6 +12,11 @@ import numpy as np
 
 
 class MSData(Protocol):
+    # the spectra read: "profile", or "centroid" (peaks only; their intensities are heights, not comparable with a
+    # profile's sums)
+    @property
+    def spectra(self) -> str: ...
+
     @property
     def RT_list(self) -> np.ndarray | None: ...
 

@@ -65,3 +65,20 @@ def test_labels_cleared_with_the_spectrum():
     assert label_texts(window) == []
     window.close()
     app.processEvents()
+
+
+def test_each_centroid_is_labelled_as_a_peak():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = SpectrumWindow()
+    window.resize(600, 300)
+    window.show()
+    app.processEvents()
+    # 150.5, lower than the centroids on either side, is a peak of its own
+    mz, intensity = np.array([120.0, 150.0, 150.5, 151.0, 180.0]), np.array([800.0, 1000.0, 300.0, 600.0, 500.0])
+    window.set_primary_plot_data(mz, intensity, spectra="centroid")
+    assert window.peak_labels.apex_mz.tolist() == [150.0, 120.0, 151.0, 180.0, 150.5]
+    window.set_primary_plot_data(mz, intensity)
+    assert window.peak_labels.apex_mz.tolist() == [150.0, 151.0]
+    window.close()
+    app.processEvents()
