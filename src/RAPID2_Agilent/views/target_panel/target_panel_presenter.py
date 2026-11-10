@@ -110,6 +110,8 @@ class TargetPanelPresenter(QObject):
         self.panel.add_requested.connect(self.add_target_from_view)
         self.panel.remove_requested.connect(self.remove_selected_targets)
         self.panel.reset_index_requested.connect(self.reset_index)
+        self.panel.apply_mz_requested.connect(self.apply_calculated_mz)
+        self.panel.recalculate_all_requested.connect(self.recalculate_all_mz)
         self.panel.columns_changed.connect(self.on_columns_changed)
         self.target_list_model.target_changed.connect(self.on_target_changed)
         self.target_list_model.targets_reset.connect(self.on_targets_reset)
@@ -268,6 +270,35 @@ class TargetPanelPresenter(QObject):
 
     def reset_index(self):
         self.target_list_model.reindex(self.panel.displayed_target_ids())
+
+    def _deviation_changes(self, target: Target) -> dict:
+        """What puts the target on the ion of its formula + adduct: the m/z, or for MS2 the precursor that isolates it;
+        nothing when it already is, or there is no formula."""
+        if target.ms_level is MSLevel.MS2:
+            deviates = target.precursor_deviates_from_formula()
+        else:
+            deviates = target.mz_deviates_from_formula(self.mz_decimals)
+        if not deviates:
+            return {}
+        return self._chemistry_changes(target, target.calculated_mz())
+
+    def _apply_deviation_changes(self, targets: list[Target]):
+        changes = {target.id: self._deviation_changes(target) for target in targets}
+        changes = {target_id: change for target_id, change in changes.items() if change}
+        if changes:
+            self.target_list_model.update_many(changes)
+
+    def apply_calculated_mz(self):
+        """The m/z of formula + adduct to the target selected, or the several."""
+        targets = self._batch_targets() or ([] if self.current_id is None else [self.target_list_model.get(self.current_id)])
+        self._apply_deviation_changes(targets)
+        self._show_current_target(apply_to_plots=not self._updating_from_plot)
+        self.panel.focus_mz()  # the button is disabled now, which would pass the focus on to the RT
+
+    def recalculate_all_mz(self):
+        """The same to every target of the list, as one edit to undo."""
+        self._apply_deviation_changes(list(self.target_list_model.targets))
+        self._show_current_target(apply_to_plots=not self._updating_from_plot)
 
     def _add_and_select(self, target: Target):
         self.target_list_model.add(target)
@@ -825,6 +856,7 @@ class TargetPanelPresenter(QObject):
             self.panel.show_target(target)
         edited = targets or ([] if target is None else [target])
         self.panel.set_mz_mismatch(any(edited_target.mz_deviates_from_formula(self.mz_decimals) for edited_target in edited))
+        self.panel.set_apply_mz_enabled(any(self._deviation_changes(edited_target) for edited_target in edited))
         self.panel.set_precursor_mismatch(any(edited_target.precursor_deviates_from_formula() for edited_target in edited))
         if target is not None and target.ms_level is MSLevel.MS2:
             self._draft_ms2 = self._current_ms2_fields()

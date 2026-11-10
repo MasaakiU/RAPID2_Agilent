@@ -26,8 +26,10 @@ class SettingsModel(QObject):
             self.settings_status_changed.emit("last_dir", directory)
     @property
     def mcp_server_enabled(self) -> bool:
-        """Whether AI assistant access (the MCP server) starts with the window."""
-        return self.settings.value("mcp_server_enabled", False, type=bool)
+        """Whether AI assistant access (the MCP server) starts with the window: on until the user turns it off, so
+        that the first start writes the launcher an AI client's plugin runs, with nothing to switch on. It listens on
+        127.0.0.1 alone, for a client that holds the token of this start."""
+        return self.settings.value("mcp_server_enabled", True, type=bool)
     @mcp_server_enabled.setter
     def mcp_server_enabled(self, value: bool):
         self.settings.setValue("mcp_server_enabled", bool(value))

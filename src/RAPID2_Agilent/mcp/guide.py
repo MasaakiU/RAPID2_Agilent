@@ -30,6 +30,10 @@ profile counts. A run can be read of its centroid spectra instead (spectra: cent
 of the data and much quicker from a network drive; their intensities are peak heights, an XIC or
 area about 0.15 to 0.4 of the profile's, so compare only values read of the same spectra.
 A .rpd file holds one of the two and is read of it (rapid2_describe_run says which).
+Choose by where a .d folder is: on a network drive or server (a share mounted under /Volumes on
+macOS, a \\\\server\\share path or a mapped network drive on Windows), read its centroid spectra; on
+a local disk, its profile. Read runs to be compared of one kind: centroid for all if any of them is
+on a server, unless the user copies them to a local disk.
 A run's centroid spectra are read whole, once, at the first call that names it (slow from a network
 drive) and kept in memory with the last few runs used, so later calls on it are quick. Profile and
 centroid are kept apart: stay with one kind for a run rather than alternating.

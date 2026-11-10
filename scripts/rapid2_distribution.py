@@ -55,8 +55,9 @@ written as a .rpd.csv file, and the RT alignment of two runs -- and work in the
 RAPID2 window you have open: open runs, show an RT and m/z range, add and
 select targets, and capture the window.
 
-RAPID2 has to be installed, and Tools > AI Assistant Access switched on once:
-that writes the launcher this integration starts. After that the analysis
+RAPID2 has to be installed and started once with Tools > AI Assistant Access
+on, as it is unless turned off: that writes the launcher this integration
+starts. After that the analysis
 tools work while RAPID2 is closed, and the viewer tools need a window, which
 the assistant can start. RAPID2 listens on 127.0.0.1 only, and every request
 carries an access token made each time it starts. An assistant that runs its

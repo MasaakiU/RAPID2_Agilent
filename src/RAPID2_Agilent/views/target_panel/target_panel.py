@@ -147,6 +147,8 @@ class TargetPanel(QWidget):
     columns_changed = pyqtSignal()  # the columns shown
     import_requested = pyqtSignal()
     export_requested = pyqtSignal()
+    apply_mz_requested = pyqtSignal()  # the m/z of formula + adduct to the selected targets
+    recalculate_all_requested = pyqtSignal()  # the same to every target of the list
     auto_requested = pyqtSignal()  # find the peaks of the selected targets, of all if none is
 
     def __init__(self, parent=None):
@@ -181,6 +183,8 @@ class TargetPanel(QWidget):
         self.adduct_edit.setPlaceholderText("[M+H]+")
         self.formula_mass_label = self._make_mass_label()
         self.calculated_mz_label = self._make_mass_label()
+        self.apply_mz_button = make_icon_button("arrow-turn-left-solid", "Set the m/z to the one of formula + adduct")
+        self.apply_mz_button.setEnabled(False)
         self.trace_type_combo = QComboBox()
         self.trace_type_combo.addItems([trace_type.value for trace_type in TraceType])
         self.trace_type_combo.setToolTip("Trace type")
@@ -257,6 +261,8 @@ class TargetPanel(QWidget):
         self.columns_button.setMenu(self.columns_menu)
         self.more_button = make_icon_button("ellipsis-solid", "Import and export of the targets")
         self.more_menu = QMenu(self)
+        self.recalculate_all_action = self.more_menu.addAction("Recalculate all m/z from formula + adduct")
+        self.more_menu.addSeparator()
         self.import_action = self.more_menu.addAction("Import targets…")
         self.export_action = self.more_menu.addAction("Export targets…")
         self.more_button.setMenu(self.more_menu)
@@ -321,7 +327,9 @@ class TargetPanel(QWidget):
         adduct_label_layout.addWidget(QLabel("Adduct"))
         adduct_label_layout.addWidget(self.adduct_info_button)
         adduct_label_layout.addStretch(1)
-        detail_layout.addRow(adduct_label, self._with_label(self.adduct_edit, self.calculated_mz_label))
+        adduct_widget = self._with_label(self.adduct_edit, self.calculated_mz_label)
+        adduct_widget.layout().insertWidget(1, self.apply_mz_button)
+        detail_layout.addRow(adduct_label, adduct_widget)
         # the trace type as the row's label, as the m/z mode button is; the MS level of its scans and the precursor
         # of the MS2 ones, side by side
         trace_widget = QWidget()
@@ -407,6 +415,8 @@ class TargetPanel(QWidget):
         self.remove_button.clicked.connect(self.remove_requested.emit)
         self.auto_button.clicked.connect(self.auto_requested.emit)
         self.reset_index_action.triggered.connect(self.reset_index_requested.emit)
+        self.apply_mz_button.clicked.connect(self.apply_mz_requested.emit)
+        self.recalculate_all_action.triggered.connect(self.recalculate_all_requested.emit)
         self.import_action.triggered.connect(self.import_requested.emit)
         self.export_action.triggered.connect(self.export_requested.emit)
         self.search_edit.textChanged.connect(self._on_search_text_changed)
@@ -907,6 +917,12 @@ class TargetPanel(QWidget):
         """Mark the m/z when it differs from the one of formula + adduct, as the list does."""
         self._mz_mismatch = mismatch
         self._update_mz_mismatch_fill()
+
+    def set_apply_mz_enabled(self, enabled: bool):
+        self.apply_mz_button.setEnabled(enabled)
+
+    def focus_mz(self):
+        self.mz_range_control.center_spin_box.setFocus()
 
     def set_precursor_mismatch(self, mismatch: bool):
         """Mark the precursor when its isolation window misses the ion of formula + adduct, as the list does."""

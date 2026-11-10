@@ -97,7 +97,8 @@ relay が、その窓口まで stdio のメッセージを中継します。ウ�
 
 ### 使い方
 
-1. RAPID2 で **Tools > AI Assistant Access** をオンにします。設定は記憶され、次回からは起動時にオンになります。
+1. インストールしたら RAPID2 を一度起動します。**Tools > AI Assistant Access** は既定でオンで、起動すると launcher が
+   書かれます（オフにすれば、その選択が記憶されます）。
    ウィンドウのタイトルに、そのウィンドウの文字（`RAPID2 Agilent — A` など）が出ます。
 2. **Tools > Copy AI Assistant Setup Command** から使うクライアント（**Claude Code** か **Codex**）を選び、
    コピーされる 1 行をターミナルで一度だけ実行します。
@@ -114,10 +115,14 @@ relay が、その窓口まで stdio のメッセージを中継します。ウ�
    環境の実行ファイル `rapid2-agilent-mcp` を直接登録しても動きます。
 
 コマンドの代わりに、次のプラグインからも登録できます（どちらか一方で十分です）。どちらも RAPID2 本体を含まず、
-上の launcher を起動するだけなので、RAPID2 を更新しても入れ直す必要はありません。先に 1. を一度済ませてください。
+上の launcher を起動するだけなので、RAPID2 を更新しても入れ直す必要はありません。先に RAPID2 を一度起動してください。
 
-- **Claude Desktop**: [`integrations/claude-desktop/rapid2-agilent.mcpb`](integrations/claude-desktop/rapid2-agilent.mcpb)
-  を開くか、Settings > Extensions からインストールします。
+- **Claude Desktop**: Plugins の「Upload a plugin」に
+  [`integrations/claude-desktop/rapid2-agilent-plugin.zip`](integrations/claude-desktop/rapid2-agilent-plugin.zip)
+  を渡します。中身は `.claude-plugin/plugin.json` と、それが指す `rapid2-agilent.mcpb` だけで、macOS・Windows 共通です。
+  拡張機能（Extensions）を入れられる版なら、
+  [`integrations/claude-desktop/rapid2-agilent.mcpb`](integrations/claude-desktop/rapid2-agilent.mcpb)
+  をダブルクリックするか、Settings > Extensions > Advanced settings > Install Extension… から入れても同じです。
 - **Codex**（CLI・IDE 拡張・ChatGPT アプリ）: このリポジトリが marketplace です。
 
   ```sh
@@ -126,18 +131,20 @@ relay が、その窓口まで stdio のメッセージを中継します。ウ�
   ```
 
 プラグインは `scripts/` のスクリプトが生成し、生成物をコミットします。`pyproject.toml` の `version` を上げたら
-作り直します（古いままだと `tests/test_codex_plugin.py` と `tests/test_claude_desktop_mcpb.py` が落ちます）。
+作り直します（古いままだと `tests/test_codex_plugin.py`、`tests/test_claude_desktop_mcpb.py`、
+`tests/test_claude_plugin.py` が落ちます）。
 
 ```sh
 python scripts/build_codex_plugin.py          # .agents/plugins/marketplace.json と integrations/codex/
 python scripts/build_claude_desktop_mcpb.py   # integrations/claude-desktop/rapid2-agilent.mcpb（npx があれば mcpb validate も）
+python scripts/build_claude_plugin.py         # integrations/claude-desktop/rapid2-agilent-plugin.zip（.mcpb を中で作り直す）
 ```
 
 Windows では launcher が `.cmd` なので、どちらも `cmd /c` 経由で起動します。Windows 上での動作はまだ確かめていません。
 
-RAPID2 を閉じていても、一度でもオンにしたことがあれば、relay がツール一覧に答え、解析ツールは relay が
+RAPID2 を閉じていても、AI Assistant Access がオンのまま一度でも起動したことがあれば、relay がツール一覧に答え、解析ツールは relay が
 自分で実行します（ウィンドウが開いていればウィンドウが答えます）。ビューアのツールにはウィンドウが要るので、
-`rapid2_launch` で RAPID2 を起動できます。起動しただけでは AI アクセスはオンになりません。
+`rapid2_launch` で RAPID2 を起動できます。ユーザーが AI Assistant Access をオフにしていれば、起動してもオフのままです。
 
 ### ツール
 

@@ -437,6 +437,38 @@ def test_formula_and_adduct_set_mz_and_mismatch_is_highlighted():
     assert panel_mz_color() == field_color
 
 
+def test_the_apply_button_and_the_menu_item_set_the_mz_of_formula_and_adduct():
+    app, view, model, presenter = build_app()
+    panel = view.target_panel
+    target_presenter = presenter.target_panel_presenter
+    first = target_presenter.add_target_from_view()
+    second = target_presenter.add_target_from_view()
+    for target in (first, second):
+        edit_cell(panel, target.id, "adduct", "[M-H]-")
+        edit_cell(panel, target.id, "formula", "C6H12O6")
+    calculated = ion_mz("C6H12O6", "[M-H]-")
+    for target in (first, second):
+        edit_cell(panel, target.id, "mz", 179.06)
+
+    # enabled only while the m/z is off the calculated one
+    target_presenter.select_target(first.id)
+    assert panel.apply_mz_button.isEnabled()
+    panel.apply_mz_button.click()
+    assert model.target_list_model.get(first.id).mz == pytest.approx(calculated)
+    assert model.target_list_model.get(second.id).mz == pytest.approx(179.06)
+    assert not panel.apply_mz_button.isEnabled()
+
+    panel.recalculate_all_action.trigger()
+    assert model.target_list_model.get(second.id).mz == pytest.approx(calculated)
+    model.target_list_model.undo()
+    assert model.target_list_model.get(second.id).mz == pytest.approx(179.06)
+    assert model.target_list_model.get(first.id).mz == pytest.approx(calculated)
+
+    # a draft has nothing to apply to
+    target_presenter.select_target(None)
+    assert not panel.apply_mz_button.isEnabled()
+
+
 def test_invalid_table_edit_is_not_committed():
     app, view, model, presenter = build_app()
     panel = view.target_panel

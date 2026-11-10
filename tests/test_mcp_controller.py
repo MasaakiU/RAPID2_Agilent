@@ -79,6 +79,21 @@ def send_while_pumping(message):
     return outcome["reply"]["result"]
 
 
+def test_a_first_start_turns_access_on_and_a_choice_to_turn_it_off_is_kept(window):
+    # On until the user turns it off: the first start writes the launcher a plugin runs, with nothing to switch on.
+    _, view, presenter = window
+    settings = presenter.model.settings_model
+    settings.settings.remove("mcp_server_enabled")
+    presenter.apply_ai_assistant_setting()
+    assert presenter.mcp_controller.running and view.ai_assistant_access_action.isChecked()
+    assert os.access(presenter.mcp_controller.launcher_path, os.X_OK)
+    presenter.set_ai_assistant_access(False)
+    assert settings.mcp_server_enabled is False
+    presenter.apply_ai_assistant_setting()
+    assert not presenter.mcp_controller.running
+    settings.settings.remove("mcp_server_enabled")
+
+
 def test_starting_publishes_the_address_and_shows_the_letter(serving):
     _, view, _, controller = serving
     document = endpoint_file.read_endpoint(registry.document_path(controller.label))
