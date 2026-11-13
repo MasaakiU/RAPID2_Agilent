@@ -33,3 +33,6 @@ src/RAPID2_Agilent/services/kensert_cnn.py
 src/RAPID2_Agilent/services/cnn_ops.py
 tests/test_peak_detection.py
 tests/peakonly_reference.npz
+
+# personal odds and ends kept beside the repository (e.g. the unused icon set moved out of resources/)
+my_misc/
