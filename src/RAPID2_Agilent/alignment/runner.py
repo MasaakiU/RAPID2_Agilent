@@ -52,10 +52,12 @@ def save_figures(
     is already saved, and the figures only illustrate it.
     """
     try:
-        from .diagnostics import save_diagnostics, save_xic_overlay
+        # diagnostics imports matplotlib only when it draws, so ask for it here
+        import matplotlib  # noqa: F401
     except ImportError:
         log.warning("matplotlib is not installed; the alignment figures are not drawn")
         return []
+    from .diagnostics import save_diagnostics, save_xic_overlay
     figures = [output_dir / "diagnostics.png"]
     save_diagnostics(result, figures[0], truth=truth)
     if xic is not None:

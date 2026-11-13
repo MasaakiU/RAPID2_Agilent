@@ -1204,6 +1204,17 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(command, [sys.executable, "-m", "RAPID2_Agilent.mcp.relay"])
         self.assertEqual(environment, {})
 
+    def test_the_standalone_build_starts_the_relay_beside_the_window(self):
+        # There is no interpreter to give -m to: the relay is its own program.
+        app = Path("/Applications/RAPID2_Agilent.app/Contents/MacOS")
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(sys, "executable", str(app / "rapid2-agilent")), \
+                mock.patch.object(sys, "platform", "darwin"):
+            command, environment = launcher.relay_invocation()
+
+        self.assertEqual(command, [str(app / "rapid2-agilent-mcp")])
+        self.assertEqual(environment, {})
+
     def test_the_default_path_is_the_one_the_launcher_directory_names(self):
         self.assertEqual(
             launcher.default_launcher_path().parent,

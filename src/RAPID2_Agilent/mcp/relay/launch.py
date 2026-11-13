@@ -4,8 +4,9 @@
 
 The relay is running whenever an AI client is -- the client starts it -- and
 RAPID2 need not be, so the relay is the one place a request to open RAPID2 can
-be answered. It starts RAPID2 with the interpreter the relay runs on and waits
-until a window takes requests, so that "open RAPID2 and show me this XIC" can
+be answered. It starts RAPID2 with the interpreter the relay runs on (in the
+standalone build, the window's executable beside it) and waits until a window
+takes requests, so that "open RAPID2 and show me this XIC" can
 carry on in the same turn.
 
 What it does not do is switch AI assistant access on. RAPID2 remembers that
@@ -24,6 +25,7 @@ import sys
 import threading
 import time
 
+from ... import frozen
 from .. import presence
 from .. import registry
 from ..protocol import ToolError
@@ -56,8 +58,13 @@ ACCESS_OFF = (
 
 
 def application_command():
-    """How to start RAPID2 from here: (argv, cwd)."""
+    """How to start RAPID2 from here: (argv, cwd).
 
+    In the standalone build, the window's executable beside the relay's.
+    """
+
+    if frozen.is_frozen():
+        return [str(frozen.executable(frozen.GUI))], None
     return [sys.executable, "-m", "RAPID2_Agilent.main"], None
 
 
@@ -70,6 +77,7 @@ def start_detached(argv, cwd):
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
+        "env": frozen.child_environment(),
     }
     if sys.platform != "win32":
         subprocess.Popen(argv, start_new_session=True, **options)

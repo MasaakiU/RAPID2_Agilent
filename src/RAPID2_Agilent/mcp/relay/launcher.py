@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from .. import paths
+from ... import frozen
 from ...utils.private_files import write_private_file
 
 
@@ -54,9 +55,12 @@ def relay_invocation():
     """How to start the relay from here: (command, environment).
 
     The interpreter this window runs on, which has RAPID2 installed; the
-    package refuses to import from a bare source tree.
+    package refuses to import from a bare source tree. In the standalone
+    build, the relay's own executable beside this one.
     """
 
+    if frozen.is_frozen():
+        return [str(frozen.executable(frozen.RELAY))], {}
     return [sys.executable, "-m", RELAY_MODULE], {}
 
 

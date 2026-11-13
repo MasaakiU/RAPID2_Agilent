@@ -552,6 +552,32 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(argv, [sys.executable, "-m", "RAPID2_Agilent.main"])
         self.assertIsNone(cwd)
 
+    def test_the_standalone_relay_starts_the_window_beside_it(self):
+        app = Path("/Applications/RAPID2_Agilent.app/Contents/MacOS")
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(sys, "executable", str(app / "rapid2-agilent-mcp")), \
+                mock.patch.object(sys, "platform", "darwin"):
+            argv, cwd = launch.application_command()
+
+        self.assertEqual(argv, [str(app / "rapid2-agilent")])
+        self.assertIsNone(cwd)
+
+    @unittest.skipIf(sys.platform == "win32", "the POSIX branch of start_detached")
+    def test_the_standalone_window_is_started_as_an_application_of_its_own(self):
+        # Not as the frozen relay's child, which it outlives.
+        with mock.patch.object(sys, "frozen", True, create=True), \
+                mock.patch.object(launch.subprocess, "Popen") as popen:
+            launch.start_detached(["app"], None)
+
+        self.assertEqual(popen.call_args.kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    @unittest.skipIf(sys.platform == "win32", "the POSIX branch of start_detached")
+    def test_from_source_the_window_inherits_the_environment(self):
+        with mock.patch.object(launch.subprocess, "Popen") as popen:
+            launch.start_detached(["app"], None)
+
+        self.assertIsNone(popen.call_args.kwargs["env"])
+
 
 class PresenceTests(unittest.TestCase):
     def setUp(self):

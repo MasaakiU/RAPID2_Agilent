@@ -1,10 +1,12 @@
 """The jobs and the option table every alignment front end shares."""
 
+import sys
+
 import pytest
 
 from RAPID2_Agilent.alignment import AlignmentConfig, with_options
 from RAPID2_Agilent.alignment.__main__ import _configuration, build_parser
-from RAPID2_Agilent.alignment.runner import RESULT_FILES, check_output_dir
+from RAPID2_Agilent.alignment.runner import RESULT_FILES, check_output_dir, save_figures
 
 
 def test_options_set_their_fields_and_none_leaves_them():
@@ -33,3 +35,10 @@ def test_an_existing_result_is_not_overwritten(tmp_path):
     (tmp_path / RESULT_FILES[0]).write_text("{}")
     with pytest.raises(FileExistsError):
         check_output_dir(tmp_path)
+
+
+def test_without_matplotlib_no_figures_are_drawn(tmp_path, monkeypatch):
+    # The "diagnostics" extra, and the standalone build, which leaves it out.
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    assert save_figures(None, tmp_path) == []
+    assert list(tmp_path.iterdir()) == []

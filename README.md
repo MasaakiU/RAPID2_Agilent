@@ -49,6 +49,30 @@ null を取るオプションは `all` / `none` / `null` で null になりま�
 `--path` や `--runs` には RAPID2 の `.rpd` ファイルも渡せます（MS1 のスキャンだけ。アライメントは `.d` だけ）。
 `.rpd` は profile か centroid のどちらか一方を持ち、`--spectra` を省くとそれで読みます。
 
+## スタンドアロン版（PyInstaller）
+
+Python 環境なしで動く版を作れます。RAPID2 をインストールした環境で（native 拡張をビルドした後に）:
+
+```sh
+python -m pip install pyinstaller
+python -m PyInstaller --noconfirm packaging/RAPID2_Agilent.spec
+```
+
+macOS では `dist/RAPID2_Agilent.app`、Windows では `dist/RAPID2_Agilent/` ができます。中には `pip install` で入る
+3 つのコマンドが、1 つの Python を共有して入っています（macOS では `RAPID2_Agilent.app/Contents/MacOS/`）。
+
+| 実行ファイル | 内容 |
+| --- | --- |
+| `rapid2-agilent` | GUI（`.app` をダブルクリックで起動するもの） |
+| `rapid2-agilent-cli` | 上の `rapid2-agilent-cli` と同じ |
+| `rapid2-agilent-mcp` | MCP の relay |
+
+MCP は、`.app` を一度起動すれば launcher が `rapid2-agilent-mcp` を指すように書き直されるので、登録はそのままで
+使えます（launcher は最後に起動した RAPID2 を指します。ソースから起動すればソースに戻ります）。
+ビルドはそれぞれの OS 上で行います。PyTorch（`gpu`）と matplotlib（`diagnostics`）は含めません
+（アライメントは numpy で動き、図は描かれません）。モデルはピーク検出に使う `peak_deconvolution/` だけを含めます。
+Windows 版のビルドはまだ確かめていません。
+
 ## テスト
 
 ```sh
@@ -71,6 +95,7 @@ python -m pytest
 | `services/reports.py` | 同じ操作の JSON 向けの要約（CLI・MCP 用） | 不要 |
 | `mcp/` | AI アシスタント（MCP）の窓口。MyWB と同じ構成 | `bridge`、`controller` のみ |
 | `cli.py` | `rapid2-agilent-cli`。MCP の解析ツールから自動生成 | 不要 |
+| `frozen.py` | スタンドアロン版（`packaging/`）の 3 つの実行ファイルの振り分けと、互いの場所 | 不要 |
 | `main.py`, `presenters/`, `views/` | GUI | 必要 |
 
 ### 処理を 1 か所に書くために
